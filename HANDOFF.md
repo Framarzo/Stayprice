@@ -7,6 +7,40 @@ eseguito davvero. Considera il codice un impianto completo ma **non ancora
 verificato end-to-end** — è il punto di partenza logico, non un progetto
 già testato.
 
+## Aggiornamento — sessione successiva (Claude Code)
+
+Al momento dell'upload di questo HANDOFF, il repository conteneva solo
+`README.md`, `package.json`, `next.config.js`, `supabase-schema.sql` e un
+`ui.js` in root — **non** `pages/`, `components/`, `.env.local.example` né
+le API route citate sotto in "File da leggere per primi". In questa
+sessione sono stati ricostruiti i pezzi mancanti, basandosi sulla logica
+già presente nel vecchio `ui.js` (spostato in `components/ui.js`, contenuto
+invariato) e sullo schema Supabase:
+
+- `lib/supabaseClient.js` — client Supabase condiviso.
+- `pages/_app.js`, `styles/globals.css` — layout globale e CSS.
+- `pages/index.js` — login con magic link (form custom, non i pacchetti
+  `@supabase/auth-ui-*`: sono stati rimossi da `package.json` perché non
+  usati, per ridurre il rischio di incompatibilità mai verificato).
+- `pages/dashboard.js` — elenco strutture del proprietario + form per
+  aggiungerne una nuova.
+- `pages/property/[id].js` — pagina struttura: listino prezzi, stato
+  libero/occupato dal calendario iCal, "Controllo rapido" prezzo volo con
+  suggerimento tariffa, storico controlli con grafico (`recharts`,
+  dipendenza già presente in `package.json` ma finora inutilizzata),
+  impostazioni del modello (elasticità/tetti/soglia).
+- `pages/api/ical-availability.js` — legge un feed `.ics` con `node-ical` e
+  restituisce solo i periodi occupato/libero.
+- `pages/api/flight-price.js` — cerca il prezzo volo: prova SerpApi
+  (Google Flights), poi Travelpayouts (`v2/prices/latest`) come riserva.
+- `.env.local.example`, `.gitignore`.
+
+**Resta tutto ciò che era già segnato come non fatto qui sotto** (npm
+install/build mai eseguiti, nessun progetto Supabase reale, login mai
+provato end-to-end, endpoint iCal mai testato contro un feed vero, nessuna
+privacy policy, nessun deploy) — questa sessione ha scritto codice, non lo
+ha eseguito né verificato contro servizi reali.
+
 ## Cosa fa l'app
 
 App multi-struttura per proprietari di B&B/case vacanza: ogni proprietario

@@ -1,0 +1,14 @@
+# Next.js
+.next/
+out/
+
+# Dipendenze
+node_modules/
+
+# Ambiente locale (contiene chiavi private, non va mai caricato)
+.env.local
+.env*.local
+
+# Log e file di sistema
+npm-debug.log*
+.DS_Store
