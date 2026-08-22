@@ -8,7 +8,6 @@ import {
   Badge,
   CalendarPicker,
   SettingsSlider,
-  baselineFor,
   computeSuggestion,
   formatEUR,
   formatPct,
@@ -241,13 +240,20 @@ export default function PropertyPage() {
       const body = await resp.json();
       if (!resp.ok) throw new Error(body.error || "Ricerca prezzo volo non riuscita.");
 
-      const baseline = baselineFor(selectedPeriod.check_in, selectedPeriod.check_out, flightChecks);
+      // Il riferimento per il suggerimento è il prezzo medio di mercato
+      // calcolato dalla fonte stessa (media di tutte le opzioni di volo
+      // trovate per quella rotta/data), non lo storico dei controlli salvati
+      // in passato — così il suggerimento è disponibile già al primo
+      // controllo su un periodo nuovo.
+      const baseline = body.average;
       const suggestion = baseline
         ? computeSuggestion(body.price, baseline, selectedPeriod.price, config)
         : null;
 
       setCheckResult({
         flightPrice: body.price,
+        average: body.average,
+        sampleSize: body.sampleSize,
         source: body.source,
         baseline,
         suggestion,
@@ -452,8 +458,8 @@ export default function PropertyPage() {
       <div className="card">
         <h2>Controllo rapido</h2>
         <p className="text-dim">
-          Cerca il prezzo attuale di un volo per un periodo del listino e confrontalo con la media dei controlli
-          precedenti per lo stesso periodo.
+          Cerca il prezzo attuale di un volo per un periodo del listino e confrontalo con il prezzo medio di
+          mercato per quella rotta e quelle date.
         </p>
         <form onSubmit={handleRunCheck} className="stack">
           <label className="field">
@@ -504,17 +510,20 @@ export default function PropertyPage() {
             </div>
             {checkResult.baseline == null ? (
               <p className="notice notice-info">
-                Primo controllo registrato per questo periodo: verrà usato come riferimento per i prossimi confronti,
-                nessun suggerimento di prezzo per ora.
+                Non è stato possibile calcolare un prezzo medio di mercato per questa ricerca: nessun suggerimento
+                disponibile.
               </p>
             ) : (
               <>
                 <div className="suggestion-row">
-                  <span className="text-dim">Media controlli precedenti</span>
+                  <span className="text-dim">
+                    Prezzo medio di mercato
+                    {checkResult.sampleSize ? ` (su ${checkResult.sampleSize} voli trovati)` : ""}
+                  </span>
                   <strong>{formatEUR(checkResult.baseline)}</strong>
                 </div>
                 <div className="suggestion-row">
-                  <span className="text-dim">Variazione</span>
+                  <span className="text-dim">Variazione rispetto alla media</span>
                   <strong>{formatPct(checkResult.suggestion.varPct)}</strong>
                 </div>
                 <div className="suggestion-row">
