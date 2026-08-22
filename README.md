@@ -74,3 +74,4 @@ npm run dev
 ```
 
 L'app sarà disponibile su `http://localhost:3000`.
+
