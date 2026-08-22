@@ -2,6 +2,11 @@
 // Prova prima Google Flights via SerpApi (dati live, gratis fino a una soglia
 // mensile), poi Travelpayouts come riserva (dati di cache fino a 7 giorni).
 // Le chiavi sono private: per questo la ricerca gira qui e non nel browser.
+//
+// Oltre al prezzo più economico trovato, calcola anche il prezzo medio di
+// mercato per quella rotta/data (media di tutte le opzioni restituite dalla
+// fonte usata) — è questo il valore usato come riferimento per il
+// suggerimento di prezzo, non lo storico dei controlli salvati manualmente.
 export default async function handler(req, res) {
   const params = req.method === "GET" ? req.query : req.body || {};
   const origin = normalizeIata(params.origin);
@@ -21,9 +26,14 @@ export default async function handler(req, res) {
   const serpApiKey = process.env.SERPAPI_KEY;
   if (serpApiKey) {
     try {
-      const price = await fetchFromSerpApi({ origin, destination, departureDate, returnDate, apiKey: serpApiKey });
-      if (price != null) {
-        return res.status(200).json({ price, source: "google_flights" });
+      const result = await fetchFromSerpApi({ origin, destination, departureDate, returnDate, apiKey: serpApiKey });
+      if (result != null) {
+        return res.status(200).json({
+          price: result.min,
+          average: result.average,
+          sampleSize: result.count,
+          source: "google_flights",
+        });
       }
       errors.push("Google Flights: nessun volo trovato per queste date.");
     } catch (err) {
@@ -37,9 +47,14 @@ export default async function handler(req, res) {
   const tpToken = process.env.TRAVELPAYOUTS_TOKEN;
   if (tpToken) {
     try {
-      const price = await fetchFromTravelpayouts({ origin, destination, departureDate, token: tpToken });
-      if (price != null) {
-        return res.status(200).json({ price, source: "travelpayouts" });
+      const result = await fetchFromTravelpayouts({ origin, destination, departureDate, token: tpToken });
+      if (result != null) {
+        return res.status(200).json({
+          price: result.min,
+          average: result.average,
+          sampleSize: result.count,
+          source: "travelpayouts",
+        });
       }
       errors.push("Travelpayouts: nessun prezzo in cache per questa rotta.");
     } catch (err) {
@@ -59,6 +74,13 @@ export default async function handler(req, res) {
 function normalizeIata(v) {
   if (typeof v !== "string") return "";
   return v.trim().toUpperCase();
+}
+
+// Media aritmetica semplice; non è statisticamente robusta (un solo volo di
+// lusso può alzarla parecchio), ma con poche opzioni disponibili per rotta è
+// la scelta più prevedibile e facile da spiegare a un utente non tecnico.
+function average(nums) {
+  return nums.reduce((s, n) => s + n, 0) / nums.length;
 }
 
 async function fetchFromSerpApi({ origin, destination, departureDate, returnDate, apiKey }) {
@@ -91,7 +113,7 @@ async function fetchFromSerpApi({ origin, destination, departureDate, returnDate
     .filter((p) => isFinite(p) && p > 0);
 
   if (candidates.length === 0) return null;
-  return Math.min(...candidates);
+  return { min: Math.min(...candidates), average: average(candidates), count: candidates.length };
 }
 
 async function fetchFromTravelpayouts({ origin, destination, departureDate, token }) {
@@ -112,14 +134,16 @@ async function fetchFromTravelpayouts({ origin, destination, departureDate, toke
     return null;
   }
 
-  // Preferisci un prezzo per una data di partenza nello stesso mese richiesto;
-  // se non c'è, usa comunque il più economico trovato per la rotta (i dati sono
-  // già in cache fino a 7 giorni, quindi è un'approssimazione dichiarata).
+  // Preferisci i prezzi per date di partenza nello stesso mese richiesto;
+  // se non ce ne sono, usa comunque tutta la cache trovata per la rotta (i
+  // dati sono già in cache fino a 7 giorni, quindi è un'approssimazione
+  // dichiarata). La media di questo insieme è il "prezzo medio di mercato"
+  // di riserva quando Google Flights non è disponibile.
   const targetMonth = departureDate.slice(0, 7);
   const sameMonth = data.data.filter((d) => typeof d.depart_date === "string" && d.depart_date.startsWith(targetMonth));
   const pool = sameMonth.length > 0 ? sameMonth : data.data;
 
   const prices = pool.map((d) => Number(d.price)).filter((p) => isFinite(p) && p > 0);
   if (prices.length === 0) return null;
-  return Math.min(...prices);
+  return { min: Math.min(...prices), average: average(prices), count: prices.length };
 }
