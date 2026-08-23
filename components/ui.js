@@ -32,6 +32,12 @@ export function todayIso() {
   return isoFromParts(d.getFullYear(), d.getMonth(), d.getDate());
 }
 
+export function addDaysIso(iso, days) {
+  const d = new Date(iso + "T00:00:00");
+  d.setDate(d.getDate() + days);
+  return isoFromParts(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
 // Media dei prezzi voli già registrati per lo stesso periodo, prima di un certo momento.
 // Questa media è la "baseline" automatica: nessun valore di riferimento va inserito a mano.
 export function baselineFor(checkIn, checkOut, entries, beforeTs = Infinity) {
