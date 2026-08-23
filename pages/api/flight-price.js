@@ -3,10 +3,26 @@
 // mensile), poi Travelpayouts come riserva (dati di cache fino a 7 giorni).
 // Le chiavi sono private: per questo la ricerca gira qui e non nel browser.
 //
-// Oltre al prezzo più economico trovato, calcola anche il prezzo medio di
-// mercato per quella rotta/data (media di tutte le opzioni restituite dalla
-// fonte usata) — è questo il valore usato come riferimento per il
-// suggerimento di prezzo, non lo storico dei controlli salvati manualmente.
+// Il "prezzo trovato" mostrato all'utente è sempre quello per la data
+// esatta richiesta. Il riferimento usato per il suggerimento, invece, NON è
+// il prezzo di un singolo giorno: è il prezzo medio dei voli su quella
+// stessa tratta osservato in un periodo più lungo, così un solo volo raro o
+// fuori mercato in un singolo giorno non falsa il confronto.
+//
+// Fonte preferita per la media: il grafico storico prezzi che Google
+// Flights calcola per ogni rotta (SerpApi lo espone come
+// price_insights.price_history, tipicamente gli ultimi ~2 mesi di prezzi
+// osservati) — un solo campo, una sola richiesta, e già rappresentativo di
+// un periodo lungo invece che di una singola data.
+//
+// Se per una rotta Google non fornisce questo storico, si ricade su un
+// fallback: si allarga la ricerca a qualche giorno vicino alla data
+// richiesta (stessa tratta) e si uniscono i prezzi trovati in un unico
+// pool, per avere comunque una media su più giorni invece che su uno solo.
+const MIN_HISTORY_SAMPLE = 1;
+const MIN_WIDEN_SAMPLE = 3;
+const NEARBY_DAY_OFFSETS = [-1, 1, -2, 2, -3, 3, -5, 5, -7, 7];
+
 export default async function handler(req, res) {
   const params = req.method === "GET" ? req.query : req.body || {};
   const origin = normalizeIata(params.origin);
@@ -32,6 +48,7 @@ export default async function handler(req, res) {
           price: result.min,
           average: result.average,
           sampleSize: result.count,
+          averageBasis: result.basis,
           source: "google_flights",
         });
       }
@@ -53,6 +70,7 @@ export default async function handler(req, res) {
           price: result.min,
           average: result.average,
           sampleSize: result.count,
+          averageBasis: "mese",
           source: "travelpayouts",
         });
       }
@@ -77,13 +95,70 @@ function normalizeIata(v) {
 }
 
 // Media aritmetica semplice; non è statisticamente robusta (un solo volo di
-// lusso può alzarla parecchio), ma con poche opzioni disponibili per rotta è
-// la scelta più prevedibile e facile da spiegare a un utente non tecnico.
+// lusso può alzarla parecchio), ma è la scelta più prevedibile e facile da
+// spiegare a un utente non tecnico.
 function average(nums) {
   return nums.reduce((s, n) => s + n, 0) / nums.length;
 }
 
+function shiftDate(iso, offsetDays) {
+  const d = new Date(iso + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + offsetDays);
+  return d.toISOString().slice(0, 10);
+}
+
+function diffDays(fromIso, toIso) {
+  const a = new Date(fromIso + "T00:00:00Z");
+  const b = new Date(toIso + "T00:00:00Z");
+  return Math.round((b - a) / 86400000);
+}
+
 async function fetchFromSerpApi({ origin, destination, departureDate, returnDate, apiKey }) {
+  const primaryData = await fetchSerpApiRaw({ origin, destination, departureDate, returnDate, apiKey });
+  if (primaryData == null) return null;
+
+  const primaryCandidates = extractFlightPrices(primaryData);
+  if (primaryCandidates.length === 0) return null;
+  const min = Math.min(...primaryCandidates);
+
+  // 1) Preferita: lo storico prezzi della rotta calcolato da Google Flights
+  // (un periodo di settimane/mesi, non un singolo giorno).
+  const history = extractPriceHistory(primaryData);
+  if (history.length >= MIN_HISTORY_SAMPLE) {
+    return { min, average: average(history), count: history.length, basis: "storico" };
+  }
+
+  // 2) Fallback: allarga la ricerca a qualche giorno vicino alla data
+  // richiesta e unisce i prezzi trovati in un unico pool.
+  let pool = primaryCandidates.slice();
+  if (pool.length < MIN_WIDEN_SAMPLE) {
+    const tripLengthDays = returnDate ? diffDays(departureDate, returnDate) : null;
+    for (const offset of NEARBY_DAY_OFFSETS) {
+      if (pool.length >= MIN_WIDEN_SAMPLE) break;
+      const altDeparture = shiftDate(departureDate, offset);
+      const altReturn = tripLengthDays != null ? shiftDate(altDeparture, tripLengthDays) : undefined;
+      try {
+        const altData = await fetchSerpApiRaw({ origin, destination, departureDate: altDeparture, returnDate: altReturn, apiKey });
+        if (altData) {
+          const extra = extractFlightPrices(altData);
+          if (extra.length) pool = pool.concat(extra);
+        }
+      } catch (err) {
+        // Una data vicina che fallisce non deve bloccare la ricerca principale.
+        console.error("flight-price/serpapi (data vicina):", err);
+      }
+    }
+  }
+
+  if (pool.length > primaryCandidates.length) {
+    return { min, average: average(pool), count: pool.length, basis: "date vicine" };
+  }
+
+  // 3) Ultima risorsa: media dei soli voli trovati per la data esatta.
+  return { min, average: average(primaryCandidates), count: primaryCandidates.length, basis: "singola data" };
+}
+
+async function fetchSerpApiRaw({ origin, destination, departureDate, returnDate, apiKey }) {
   const url = new URL("https://serpapi.com/search.json");
   url.searchParams.set("engine", "google_flights");
   url.searchParams.set("departure_id", origin);
@@ -107,13 +182,25 @@ async function fetchFromSerpApi({ origin, destination, departureDate, returnDate
   if (data.error) {
     throw new Error(data.error);
   }
+  return data;
+}
 
-  const candidates = [...(data.best_flights || []), ...(data.other_flights || [])]
+function extractFlightPrices(data) {
+  return [...(data.best_flights || []), ...(data.other_flights || [])]
     .map((f) => Number(f.price))
     .filter((p) => isFinite(p) && p > 0);
+}
 
-  if (candidates.length === 0) return null;
-  return { min: Math.min(...candidates), average: average(candidates), count: candidates.length };
+// price_insights.price_history è un array di coppie [timestamp, prezzo] con
+// l'andamento del prezzo di questa rotta nel tempo (Google Flights lo usa
+// per il grafico "storico prezzi"); qui interessa solo il prezzo.
+function extractPriceHistory(data) {
+  const history = data && data.price_insights && Array.isArray(data.price_insights.price_history)
+    ? data.price_insights.price_history
+    : [];
+  return history
+    .map((entry) => Number(Array.isArray(entry) ? entry[1] : entry && entry.price))
+    .filter((p) => isFinite(p) && p > 0);
 }
 
 async function fetchFromTravelpayouts({ origin, destination, departureDate, token }) {
@@ -134,16 +221,10 @@ async function fetchFromTravelpayouts({ origin, destination, departureDate, toke
     return null;
   }
 
-  // Preferisci i prezzi per date di partenza nello stesso mese richiesto;
-  // se non ce ne sono, usa comunque tutta la cache trovata per la rotta (i
-  // dati sono già in cache fino a 7 giorni, quindi è un'approssimazione
-  // dichiarata). La media di questo insieme è il "prezzo medio di mercato"
-  // di riserva quando Google Flights non è disponibile.
-  const targetMonth = departureDate.slice(0, 7);
-  const sameMonth = data.data.filter((d) => typeof d.depart_date === "string" && d.depart_date.startsWith(targetMonth));
-  const pool = sameMonth.length > 0 ? sameMonth : data.data;
-
-  const prices = pool.map((d) => Number(d.price)).filter((p) => isFinite(p) && p > 0);
+  // Travelpayouts è già una cache: qui si usa tutta la cache trovata per la
+  // rotta (non filtrata a un solo giorno), quindi la media è già su un
+  // periodo più lungo per costruzione.
+  const prices = data.data.map((d) => Number(d.price)).filter((p) => isFinite(p) && p > 0);
   if (prices.length === 0) return null;
   return { min: Math.min(...prices), average: average(prices), count: prices.length };
 }
