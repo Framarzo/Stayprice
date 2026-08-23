@@ -61,6 +61,16 @@ const AMENITY_MATCH_KEYWORDS = {
   free_parking: ["free parking", "parking"],
 };
 
+// Servizi "distintivi": abbastanza rari da restringere davvero il confronto
+// a strutture di fascia simile (piscina, jacuzzi, ecc.). Parcheggio gratuito,
+// aria condizionata, colazione e pulizie giornaliere sono invece così comuni
+// che quasi ogni annuncio le ha: usarle per "restringere" il confronto non
+// esclude quasi nessuno, e finisce per mescolare strutture economy con
+// strutture di lusso nello stesso campione — proprio l'effetto che questo
+// filtro dovrebbe evitare. Per questo solo i servizi distintivi vengono
+// usati per restringere il campione dei comparabili.
+const DISTINCTIVE_AMENITY_KEYS = ["pool", "sauna", "jacuzzi", "spa", "sea_view", "private_chef_kitchen", "gym"];
+
 export default async function handler(req, res) {
   const params = req.method === "GET" ? req.query : req.body || {};
   const address = typeof params.address === "string" ? params.address.trim() : "";
@@ -126,13 +136,17 @@ export default async function handler(req, res) {
     )
   );
 
-  // Se la struttura ha servizi selezionati, prova a restringere il
-  // confronto ai soli annunci in zona che condividono almeno uno di quegli
-  // stessi servizi, invece di mescolarli con strutture che non li hanno.
+  // Se la struttura ha servizi DISTINTIVI selezionati (piscina, jacuzzi,
+  // ecc.), prova a restringere il confronto ai soli annunci in zona che
+  // condividono almeno uno di quegli stessi servizi, invece di mescolarli
+  // con strutture che non li hanno. I servizi comuni (parcheggio, aria
+  // condizionata, colazione, pulizie) non vengono usati qui: sono così
+  // diffusi che "restringere" su di loro non escluderebbe quasi nessuno.
+  const distinctiveAmenities = amenities.filter((a) => DISTINCTIVE_AMENITY_KEYS.includes(a));
   let comparablesForRates = comparables;
   let matchedOnAmenities = false;
-  if (amenities.length > 0) {
-    const withMatchingAmenities = comparables.filter((c) => amenityOverlapCount(amenities, c) > 0);
+  if (distinctiveAmenities.length > 0) {
+    const withMatchingAmenities = comparables.filter((c) => amenityOverlapCount(distinctiveAmenities, c) > 0);
     if (withMatchingAmenities.length >= MIN_COMPARABLES) {
       comparablesForRates = withMatchingAmenities;
       matchedOnAmenities = true;
