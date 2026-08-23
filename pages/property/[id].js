@@ -1123,6 +1123,14 @@ export default function PropertyPage() {
               </span>
               <strong>{formatEUR(startingPriceResult.suggestedPrice)}</strong>
             </div>
+            <p className="text-dim" style={{ fontSize: 12.5, marginTop: -4 }}>
+              Attenzione: questa è una media recente (ultimi 90 giorni, o l'ultimo anno se i 90 giorni non
+              bastano) delle strutture simili trovate — non è calcolata per un periodo specifico. AirROI non
+              permette di chiedere una tariffa per date future precise, quindi se il periodo che stai per
+              aggiungere è in alta stagione (es. estate) il prezzo reale sarà probabilmente più alto di questo,
+              e più basso in bassa stagione: usa questo numero come riferimento di partenza, non come prezzo
+              finale.
+            </p>
             <button
               type="button"
               className="btn btn-primary"
