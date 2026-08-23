@@ -41,6 +41,19 @@ const RADII_MILES = [3, 5, 10]; // allarga la ricerca se i risultati sono pochi 
 const MIN_RADIUS_MILES = 1;
 const MAX_RADIUS_MILES = 10; // limite documentato dall'API di AirROI
 
+// Soglia più bassa di MIN_COMPARABLES, usata solo per decidere se fidarsi
+// del confronto ristretto ai servizi distintivi (piscina, jacuzzi, ecc.).
+// Con un raggio piccolo capita spesso di trovare solo 3-4 strutture che
+// condividono davvero questi servizi: scartarle e tornare al confronto con
+// TUTTA la zona (che mescola economy e luxury) fa crollare il prezzo
+// suggerito in modo brusco e poco intuitivo cambiando di poco il raggio
+// (es. a 5 miglia si trovano 8 corrispondenze e il prezzo riflette ville di
+// lusso vere, a 7 miglia ne restano solo 3-4, si ricade sull'intera zona e
+// il prezzo crolla) — anche se il campione resta piccolo, 3 strutture con
+// piscina sono comunque un riferimento migliore di un campione che le
+// mescola con B&B economici.
+const MIN_AMENITY_MATCHES = 3;
+
 // Parole chiave (in inglese, la lingua delle amenities restituite da
 // AirROI) usate per riconoscere ciascun nostro servizio nella lista di
 // amenities di un annuncio comparabile. Il match è testuale e quindi
@@ -147,7 +160,7 @@ export default async function handler(req, res) {
   let matchedOnAmenities = false;
   if (distinctiveAmenities.length > 0) {
     const withMatchingAmenities = comparables.filter((c) => amenityOverlapCount(distinctiveAmenities, c) > 0);
-    if (withMatchingAmenities.length >= MIN_COMPARABLES) {
+    if (withMatchingAmenities.length >= MIN_AMENITY_MATCHES) {
       comparablesForRates = withMatchingAmenities;
       matchedOnAmenities = true;
     }
@@ -167,7 +180,7 @@ export default async function handler(req, res) {
   // Il confronto ristretto ai servizi può avere annunci con tariffa non
   // disponibile: se restano troppo pochi campioni per fidarsi, si ricade
   // sull'intera zona invece di dare un prezzo poco affidabile.
-  if (matchedOnAmenities && rates.length < MIN_COMPARABLES) {
+  if (matchedOnAmenities && rates.length < MIN_AMENITY_MATCHES) {
     matchedOnAmenities = false;
     rates = comparables
       .map(toRate)
