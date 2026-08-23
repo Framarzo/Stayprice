@@ -4,6 +4,8 @@ import Link from "next/link";
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { supabase } from "../../lib/supabaseClient";
 import {
+  AMENITIES,
+  AMENITY_LABELS,
   CONFIDENCE_LABELS,
   DEFAULT_CONFIG,
   PROPERTY_TYPE_DESCRIPTIONS,
@@ -20,6 +22,7 @@ import {
   formatZ,
   isoToLabel,
   periodLabelFromDates,
+  suggestPropertyTypeFromAmenities,
   todayIso,
 } from "../../components/ui";
 
@@ -76,6 +79,8 @@ export default function PropertyPage() {
   const [editBedrooms, setEditBedrooms] = useState("");
   const [editBathrooms, setEditBathrooms] = useState("");
   const [editMaxGuests, setEditMaxGuests] = useState("");
+  const [editSizeSqm, setEditSizeSqm] = useState("");
+  const [editAmenities, setEditAmenities] = useState([]);
   const [savingProperty, setSavingProperty] = useState(false);
   const [savePropertyError, setSavePropertyError] = useState("");
 
@@ -138,6 +143,8 @@ export default function PropertyPage() {
     setEditBedrooms(propData.bedrooms != null ? String(propData.bedrooms) : "");
     setEditBathrooms(propData.bathrooms != null ? String(propData.bathrooms) : "");
     setEditMaxGuests(propData.max_guests != null ? String(propData.max_guests) : "");
+    setEditSizeSqm(propData.size_sqm != null ? String(propData.size_sqm) : "");
+    setEditAmenities(Array.isArray(propData.amenities) ? propData.amenities : []);
     setListino(listinoData || []);
     setFlightChecks(checksData || []);
     setConfig(
@@ -601,6 +608,8 @@ export default function PropertyPage() {
         bedrooms: editBedrooms !== "" ? parseInt(editBedrooms, 10) : null,
         bathrooms: editBathrooms !== "" ? parseFloat(editBathrooms) : null,
         max_guests: editMaxGuests !== "" ? parseInt(editMaxGuests, 10) : null,
+        size_sqm: editSizeSqm !== "" ? parseFloat(editSizeSqm) : null,
+        amenities: editAmenities,
       })
       .eq("id", property.id);
     setSavingProperty(false);
@@ -661,6 +670,15 @@ export default function PropertyPage() {
 
   const today = todayIso();
 
+  // Suggerimento di fascia in base ai servizi e alla grandezza inseriti:
+  // resta sempre e solo un suggerimento, mai una scelta automatica — la
+  // fascia effettiva è quella impostata a mano nel campo qui sopra.
+  const suggestedPropertyType = suggestPropertyTypeFromAmenities({
+    amenities: editAmenities,
+    sizeSqm: editSizeSqm,
+    bedrooms: editBedrooms,
+  });
+
   return (
     <div className="container">
       <header className="topbar">
@@ -718,6 +736,19 @@ export default function PropertyPage() {
             <p className="text-dim" style={{ fontSize: 12.5, marginTop: -8 }}>
               {PROPERTY_TYPE_DESCRIPTIONS[editPropertyType]}
             </p>
+            {suggestedPropertyType !== editPropertyType && (
+              <p className="notice notice-info" style={{ marginTop: -8 }}>
+                In base ai servizi e alla grandezza inseriti qui sotto, questa struttura sembra più adatta alla
+                fascia <strong>{PROPERTY_TYPE_LABELS[suggestedPropertyType]}</strong>.{" "}
+                <button
+                  type="button"
+                  className="icon-text-btn"
+                  onClick={() => setEditPropertyType(suggestedPropertyType)}
+                >
+                  Usa questo suggerimento
+                </button>
+              </p>
+            )}
             <label className="field">
               <span>Indirizzo o zona (per confrontarla con strutture simili)</span>
               <input
@@ -767,6 +798,41 @@ export default function PropertyPage() {
               strutture simili in zona), qui sotto in "Disponibilità e prezzi" — sono facoltativi per il resto
               dell'app.
             </p>
+            <label className="field">
+              <span>Grandezza della struttura (m²)</span>
+              <input
+                className="input"
+                type="number"
+                min="0"
+                step="1"
+                value={editSizeSqm}
+                onChange={(e) => setEditSizeSqm(e.target.value)}
+                placeholder="es. 120"
+              />
+            </label>
+            <div className="field">
+              <span>Servizi e caratteristiche</span>
+              <div className="two-col">
+                {AMENITIES.map((a) => (
+                  <label key={a.key} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5 }}>
+                    <input
+                      type="checkbox"
+                      checked={editAmenities.includes(a.key)}
+                      onChange={(e) =>
+                        setEditAmenities((list) =>
+                          e.target.checked ? [...list, a.key] : list.filter((k) => k !== a.key)
+                        )
+                      }
+                    />
+                    {a.label}
+                  </label>
+                ))}
+              </div>
+            </div>
+            <p className="text-dim" style={{ fontSize: 12.5, marginTop: -8 }}>
+              Grandezza e servizi servono a suggerire automaticamente la fascia più adatta qui sopra (mercato:
+              piscina, SPA, vista mare e simili sono tipici della fascia luxury) — restano comunque facoltativi.
+            </p>
             <button type="submit" className="btn btn-primary" disabled={savingProperty}>
               {savingProperty ? "Salvataggio…" : "Salva"}
             </button>
@@ -795,9 +861,18 @@ export default function PropertyPage() {
                   · {property.bedrooms != null ? `${property.bedrooms} camere` : "camere n/d"},{" "}
                   {property.bathrooms != null ? `${property.bathrooms} bagni` : "bagni n/d"},{" "}
                   {property.max_guests != null ? `${property.max_guests} ospiti max` : "ospiti n/d"}
+                  {property.size_sqm != null ? `, ${property.size_sqm} m²` : ""}
                 </>
               ) : null}
             </p>
+            {Array.isArray(property.amenities) && property.amenities.length > 0 && (
+              <p className="text-dim">
+                Servizi:{" "}
+                <strong className="text-ink">
+                  {property.amenities.map((k) => AMENITY_LABELS[k] || k).join(", ")}
+                </strong>
+              </p>
+            )}
             {calendarLoading && <p className="text-dim">Lettura calendario…</p>}
             {calendarError && <p className="notice notice-error">{calendarError}</p>}
           </div>
