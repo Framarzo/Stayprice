@@ -240,11 +240,11 @@ export default function PropertyPage() {
       const body = await resp.json();
       if (!resp.ok) throw new Error(body.error || "Ricerca prezzo volo non riuscita.");
 
-      // Il riferimento per il suggerimento è il prezzo medio di mercato
-      // calcolato dalla fonte stessa (media di tutte le opzioni di volo
-      // trovate per quella rotta/data), non lo storico dei controlli salvati
-      // in passato — così il suggerimento è disponibile già al primo
-      // controllo su un periodo nuovo.
+      // Il riferimento per il suggerimento è il prezzo medio di mercato per
+      // questa tratta calcolato su un periodo più lungo (storico prezzi
+      // della rotta, o in fallback qualche giorno vicino alla data
+      // richiesta), non il prezzo di un singolo giorno né lo storico dei
+      // controlli salvati manualmente in passato.
       const baseline = body.average;
       const suggestion = baseline
         ? computeSuggestion(body.price, baseline, selectedPeriod.price, config)
@@ -254,6 +254,7 @@ export default function PropertyPage() {
         flightPrice: body.price,
         average: body.average,
         sampleSize: body.sampleSize,
+        averageBasis: body.averageBasis || "",
         source: body.source,
         baseline,
         suggestion,
@@ -458,8 +459,8 @@ export default function PropertyPage() {
       <div className="card">
         <h2>Controllo rapido</h2>
         <p className="text-dim">
-          Cerca il prezzo attuale di un volo per un periodo del listino e confrontalo con il prezzo medio di
-          mercato per quella rotta e quelle date.
+          Cerca il prezzo attuale di un volo per un periodo del listino e confrontalo con il prezzo medio dei
+          voli su quella rotta osservato in un periodo più lungo, non solo in quel singolo giorno.
         </p>
         <form onSubmit={handleRunCheck} className="stack">
           <label className="field">
@@ -522,6 +523,16 @@ export default function PropertyPage() {
                   </span>
                   <strong>{formatEUR(checkResult.baseline)}</strong>
                 </div>
+                <p className="text-dim" style={{ fontSize: 12.5, marginTop: -4 }}>
+                  {checkResult.averageBasis === "storico" &&
+                    "Media calcolata sullo storico prezzi di questa rotta (ultimi periodi osservati da Google Flights), non sul singolo giorno cercato."}
+                  {checkResult.averageBasis === "date vicine" &&
+                    "Su questa data erano disponibili pochi voli: la media include anche qualche giorno vicino sulla stessa rotta, per un riferimento più stabile."}
+                  {checkResult.averageBasis === "mese" &&
+                    "Media calcolata sui prezzi in cache per questa rotta nel periodo, non sul singolo giorno cercato."}
+                  {checkResult.averageBasis === "singola data" &&
+                    "Nessuno storico disponibile per questa rotta: la media è calcolata solo sui voli trovati per la data esatta cercata."}
+                </p>
                 <div className="suggestion-row">
                   <span className="text-dim">Variazione rispetto alla media</span>
                   <strong>{formatPct(checkResult.suggestion.varPct)}</strong>
