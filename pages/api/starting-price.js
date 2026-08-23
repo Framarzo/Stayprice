@@ -105,6 +105,27 @@ export default async function handler(req, res) {
     });
   }
 
+  // DEBUG TEMPORANEO: da rimuovere dopo aver capito perché i prezzi
+  // suggeriti risultano troppo bassi. Logga i parametri inviati ad AirROI
+  // e un estratto grezzo delle prime comparabili così com'è ricevuto.
+  console.log(
+    "starting-price DEBUG params:",
+    JSON.stringify({ address, bedrooms, bathrooms, guests, manualRadius, usedRadius, totalComparables: comparables.length })
+  );
+  console.log(
+    "starting-price DEBUG sample listings:",
+    JSON.stringify(
+      comparables.slice(0, 5).map((c) => ({
+        bedrooms: c && c.property_details && c.property_details.bedrooms,
+        baths: c && c.property_details && c.property_details.baths,
+        guests: c && c.property_details && c.property_details.guests,
+        currency: c && c.currency,
+        l90d_avg_rate: c && c.performance_metrics && c.performance_metrics.l90d_avg_rate,
+        ttm_avg_rate: c && c.performance_metrics && c.performance_metrics.ttm_avg_rate,
+      }))
+    )
+  );
+
   // Se la struttura ha servizi selezionati, prova a restringere il
   // confronto ai soli annunci in zona che condividono almeno uno di quegli
   // stessi servizi, invece di mescolarli con strutture che non li hanno.
@@ -167,6 +188,12 @@ export default async function handler(req, res) {
   };
 
   const suggested = propertyType === "economy" ? stats.p25 : propertyType === "luxury" ? stats.p75 : stats.median;
+
+  // DEBUG TEMPORANEO (vedi sopra).
+  console.log(
+    "starting-price DEBUG result:",
+    JSON.stringify({ propertyType, suggested, rates, stats })
+  );
 
   return res.status(200).json({
     suggestedPrice: Math.round(suggested),
