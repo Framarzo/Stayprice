@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/router";
 import Link from "next/link";
 import { supabase } from "../lib/supabaseClient";
+import { PROPERTY_TYPE_LABELS, PROPERTY_TYPES } from "../components/ui";
 
 export default function Dashboard() {
   const router = useRouter();
@@ -12,6 +13,7 @@ export default function Dashboard() {
   const [name, setName] = useState("");
   const [airportCode, setAirportCode] = useState("BDS");
   const [icalUrl, setIcalUrl] = useState("");
+  const [propertyType, setPropertyType] = useState("standard");
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
 
@@ -58,6 +60,7 @@ export default function Dashboard() {
       name: name.trim(),
       airport_code: (airportCode.trim() || "BDS").toUpperCase(),
       ical_url: icalUrl.trim() || null,
+      property_type: propertyType,
     });
 
     setSaving(false);
@@ -68,6 +71,7 @@ export default function Dashboard() {
     setName("");
     setAirportCode("BDS");
     setIcalUrl("");
+    setPropertyType("standard");
     loadProperties();
   }
 
@@ -97,6 +101,9 @@ export default function Dashboard() {
         {properties.map((p) => (
           <Link key={p.id} href={`/property/${p.id}`} className="card property-card">
             <h3>{p.name}</h3>
+            <p className="text-dim">
+              Fascia: {PROPERTY_TYPE_LABELS[p.property_type] || PROPERTY_TYPE_LABELS.standard}
+            </p>
             <p className="text-dim">Aeroporto di riferimento: {p.airport_code}</p>
             <p className="text-dim">{p.ical_url ? "Calendario collegato" : "Nessun calendario collegato"}</p>
           </Link>
@@ -139,6 +146,20 @@ export default function Dashboard() {
               placeholder="https://..."
             />
           </label>
+          <label className="field">
+            <span>Fascia della struttura</span>
+            <select className="input" value={propertyType} onChange={(e) => setPropertyType(e.target.value)}>
+              {PROPERTY_TYPES.map((t) => (
+                <option key={t} value={t}>
+                  {PROPERTY_TYPE_LABELS[t]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <p className="text-dim" style={{ fontSize: 12.5, marginTop: -8 }}>
+            Determina i valori di partenza della strategia di prezzo (quanto e quanto in fretta il prezzo reagisce
+            al costo dei voli) — resta comunque regolabile in ogni momento dalle Impostazioni della struttura.
+          </p>
           <button type="submit" className="btn btn-primary" disabled={saving}>
             {saving ? "Salvataggio…" : "Aggiungi struttura"}
           </button>
