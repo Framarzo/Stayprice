@@ -56,8 +56,19 @@ export default async function handler(req, res) {
 
     const body = await resp.json().catch(() => null);
     if (!resp.ok || body !== true) {
+      // Lodgify di solito spiega il motivo del rifiuto nel corpo della
+      // risposta (es. intervalli di date sovrapposti, min/max stay in
+      // conflitto, room_type_id sbagliato): lo si include nel messaggio
+      // stesso, non solo in "detail", così è visibile anche senza aprire
+      // gli strumenti sviluppatore del browser.
+      const reason =
+        body && typeof body === "object"
+          ? body.message || body.error || body.title || JSON.stringify(body)
+          : typeof body === "string" && body
+          ? body
+          : `risposta HTTP ${resp.status}`;
       return res.status(502).json({
-        error: "Lodgify ha rifiutato l'aggiornamento del prezzo.",
+        error: `Lodgify ha rifiutato l'aggiornamento del prezzo: ${reason}`,
         detail: body,
       });
     }
