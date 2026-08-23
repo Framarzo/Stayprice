@@ -1,16 +1,22 @@
-// Applica UN prezzo per notte a un intervallo di date sulla struttura
-// Lodgify collegata. Non viene mai chiamato in automatico: parte solo
-// quando il proprietario clicca esplicitamente "Applica su Lodgify" dopo
-// aver visto il suggerimento (nessuna modifica di prezzo avviene senza
-// un'azione manuale della persona).
+// Applica UN prezzo per notte a un intervallo di date (o la tariffa di
+// base/default) sulla struttura Lodgify collegata. Non viene mai chiamato
+// in automatico: parte solo quando il proprietario clicca esplicitamente
+// un pulsante "Applica"/"Imposta" dopo aver visto il suggerimento (nessuna
+// modifica di prezzo avviene senza un'azione manuale della persona).
 //
 // Endpoint Lodgify usato: POST /v1/rates/savewithoutavailability
 // (https://docs.lodgify.com/reference/savetiny). end_date è ESCLUSIVO in
 // Lodgify (il prezzo si applica alle notti da start_date fino a, ma non
 // includendo, end_date) — la stessa convenzione già usata in questa app
 // per check_in/check_out, quindi le date si passano senza alcuna modifica.
+//
+// Lodgify rifiuta le tariffe per data specifica finché la camera non ha
+// già una tariffa di base ("default rate", quella usata per le notti senza
+// un prezzo specifico) — da qui setDefault: true, per crearla/aggiornarla
+// una volta sola dall'app invece di dover passare dall'interfaccia di
+// Lodgify. Una tariffa di default non ha start_date/end_date.
 export default async function handler(req, res) {
-  const { apiKey, propertyId, roomTypeId, startDate, endDate, pricePerDay } = req.body || {};
+  const { apiKey, propertyId, roomTypeId, startDate, endDate, pricePerDay, setDefault } = req.body || {};
 
   if (!apiKey || typeof apiKey !== "string") {
     return res.status(400).json({ error: "Struttura non collegata a Lodgify (chiave API mancante)." });
@@ -20,12 +26,25 @@ export default async function handler(req, res) {
   if (!isFinite(propId) || !isFinite(roomId)) {
     return res.status(400).json({ error: "Struttura non collegata a Lodgify (identificativi mancanti)." });
   }
-  if (!startDate || !endDate || !/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate) || endDate <= startDate) {
-    return res.status(400).json({ error: "Intervallo di date non valido." });
-  }
   const price = Number(pricePerDay);
   if (!isFinite(price) || price < 1) {
     return res.status(400).json({ error: "Prezzo non valido." });
+  }
+
+  let rate;
+  if (setDefault) {
+    rate = { is_default: true, price_per_day: price };
+  } else {
+    if (
+      !startDate ||
+      !endDate ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(startDate) ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(endDate) ||
+      endDate <= startDate
+    ) {
+      return res.status(400).json({ error: "Intervallo di date non valido." });
+    }
+    rate = { is_default: false, start_date: startDate, end_date: endDate, price_per_day: price };
   }
 
   try {
@@ -39,14 +58,7 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         property_id: propId,
         room_type_id: roomId,
-        rates: [
-          {
-            is_default: false,
-            start_date: startDate,
-            end_date: endDate,
-            price_per_day: price,
-          },
-        ],
+        rates: [rate],
       }),
     });
 
