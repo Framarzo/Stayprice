@@ -4,6 +4,43 @@ import { TrendingUp, TrendingDown, Minus, Info, ChevronLeft, ChevronRight, Calen
 export const DEFAULT_CONFIG = { elasticity: 0.4, capUp: 20, capDown: 15, threshold: 5, zThreshold: 1 };
 const WEEKDAYS_IT = ["L", "M", "M", "G", "V", "S", "D"];
 
+// Strategia di prezzo consigliata in base alla fascia della struttura.
+// L'idea: chi prenota una struttura economica tende a farlo last-minute,
+// cercando l'occasione — è più sensibile al prezzo del volo del momento, e
+// il prezzo della camera dovrebbe seguirlo più da vicino e più in fretta.
+// Chi prenota una struttura di fascia alta pianifica con largo anticipo,
+// indipendentemente da quanto costa il volo in quel momento — il prezzo
+// dovrebbe restare più stabile e muoversi solo per scostamenti davvero
+// marcati. "Standard" è il punto di equilibrio (= DEFAULT_CONFIG).
+//
+// Sono valori di partenza, non un vincolo: restano modificabili con i
+// cursori in Impostazioni per ogni singola struttura.
+export const PROPERTY_TYPES = ["economy", "standard", "luxury"];
+
+export const PROPERTY_TYPE_LABELS = {
+  economy: "Economy",
+  standard: "Standard",
+  luxury: "Luxury",
+};
+
+export const PROPERTY_TYPE_DESCRIPTIONS = {
+  economy:
+    "Ospiti più sensibili al prezzo, prenotazioni spesso last-minute: il prezzo reagisce di più e a scostamenti più piccoli.",
+  standard: "Il punto di equilibrio: reattività bilanciata (valori di default dell'app).",
+  luxury:
+    "Ospiti che prenotano con largo anticipo indipendentemente dal costo del volo: il prezzo reagisce meno, e solo a scostamenti marcati.",
+};
+
+export const PROPERTY_TYPE_CONFIGS = {
+  economy: { elasticity: 0.6, capUp: 25, capDown: 20, threshold: 3, zThreshold: 0.7 },
+  standard: { ...DEFAULT_CONFIG },
+  luxury: { elasticity: 0.2, capUp: 12, capDown: 8, threshold: 8, zThreshold: 1.5 },
+};
+
+export function configForPropertyType(propertyType) {
+  return PROPERTY_TYPE_CONFIGS[propertyType] || DEFAULT_CONFIG;
+}
+
 export function clamp(n, min, max) {
   return Math.min(max, Math.max(min, n));
 }
