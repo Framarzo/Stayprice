@@ -75,6 +75,12 @@ const SIZE_PER_BEDROOM_LUXURY_THRESHOLD = 40; // m² a camera, oltre cui la stru
 const LUXURY_SCORE_THRESHOLD = 6; // es. 3 servizi "luxury", o 2 + spazio abbondante
 const STANDARD_SCORE_THRESHOLD = 2; // es. 1 servizio "luxury", o 2 servizi "basic"
 
+// La piscina è un elemento imprescindibile per la fascia luxury: da sola
+// non basta (serve comunque raggiungere LUXURY_SCORE_THRESHOLD con altri
+// servizi/spazio), ma senza piscina il suggerimento non propone mai
+// "luxury", anche con un punteggio altrimenti sufficiente (es. sauna +
+// vasca idromassaggio + SPA) — al massimo "standard". Resta comunque solo
+// un SUGGERIMENTO: il proprietario può sempre impostare la fascia a mano.
 export function suggestPropertyTypeFromAmenities({ amenities, sizeSqm, bedrooms }) {
   const list = Array.isArray(amenities) ? amenities : [];
   let score = 0;
@@ -86,7 +92,8 @@ export function suggestPropertyTypeFromAmenities({ amenities, sizeSqm, bedrooms 
   if (isFinite(size) && size > 0 && isFinite(rooms) && rooms > 0 && size / rooms >= SIZE_PER_BEDROOM_LUXURY_THRESHOLD) {
     score += LUXURY_AMENITY_WEIGHT;
   }
-  if (score >= LUXURY_SCORE_THRESHOLD) return "luxury";
+  const hasPool = list.includes("pool");
+  if (score >= LUXURY_SCORE_THRESHOLD && hasPool) return "luxury";
   if (score >= STANDARD_SCORE_THRESHOLD) return "standard";
   return "economy";
 }
