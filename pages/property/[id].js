@@ -9,6 +9,7 @@ import {
   Badge,
   CalendarPicker,
   SettingsSlider,
+  addDaysIso,
   computeSuggestion,
   formatEUR,
   formatPct,
@@ -71,6 +72,23 @@ export default function PropertyPage() {
   // --- impostazioni ---
   const [savingSettings, setSavingSettings] = useState(false);
   const [settingsSaved, setSettingsSaved] = useState(false);
+
+  // --- collegamento al channel manager (Lodgify): mai automatico, il
+  // prezzo si applica solo quando il proprietario clicca esplicitamente ---
+  const [editingLodgify, setEditingLodgify] = useState(false);
+  const [lodgifyApiKeyInput, setLodgifyApiKeyInput] = useState("");
+  const [lodgifyTesting, setLodgifyTesting] = useState(false);
+  const [lodgifyError, setLodgifyError] = useState("");
+  const [lodgifyOptions, setLodgifyOptions] = useState(null); // [{ id, name, rooms: [{id, name}] }]
+  const [lodgifySelectedPropertyId, setLodgifySelectedPropertyId] = useState("");
+  const [lodgifySelectedRoomId, setLodgifySelectedRoomId] = useState("");
+  const [lodgifySavingConnection, setLodgifySavingConnection] = useState(false);
+
+  const [applyingCheck, setApplyingCheck] = useState(false);
+  const [applyCheckStatus, setApplyCheckStatus] = useState(""); // "" | "ok" | messaggio di errore
+
+  const [applyingDay, setApplyingDay] = useState("");
+  const [applyDayStatus, setApplyDayStatus] = useState({}); // { [data]: "ok" | messaggio di errore }
 
   const loadAll = useCallback(async (propertyId) => {
     const [{ data: propData, error: propErr }, { data: listinoData }, { data: checksData }, { data: settingsData }] =
@@ -229,6 +247,7 @@ export default function PropertyPage() {
     e.preventDefault();
     setCheckError("");
     setCheckResult(null);
+    setApplyCheckStatus("");
     if (!selectedPeriod) {
       setCheckError("Seleziona prima un periodo dal listino.");
       return;
@@ -285,6 +304,7 @@ export default function PropertyPage() {
   async function handleScanPeriod() {
     setScanError("");
     setScanResult(null);
+    setApplyDayStatus({});
     if (!selectedPeriod) {
       setScanError("Seleziona prima un periodo dal listino.");
       return;
@@ -313,6 +333,136 @@ export default function PropertyPage() {
       setScanError(err.message);
     } finally {
       setScanning(false);
+    }
+  }
+
+  // --- Channel manager (Lodgify) ---
+
+  async function handleTestLodgifyConnection() {
+    setLodgifyError("");
+    setLodgifyOptions(null);
+    setLodgifySelectedPropertyId("");
+    setLodgifySelectedRoomId("");
+    if (!lodgifyApiKeyInput.trim()) {
+      setLodgifyError("Inserisci la chiave API pubblica di Lodgify.");
+      return;
+    }
+    setLodgifyTesting(true);
+    try {
+      const resp = await fetch("/api/lodgify/properties", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: lodgifyApiKeyInput.trim() }),
+      });
+      const body = await resp.json();
+      if (!resp.ok) throw new Error(body.error || "Connessione a Lodgify non riuscita.");
+      const props = body.properties || [];
+      setLodgifyOptions(props);
+      if (props.length === 0) {
+        setLodgifyError("Nessuna struttura trovata su questo account Lodgify.");
+      }
+    } catch (err) {
+      setLodgifyError(err.message);
+    } finally {
+      setLodgifyTesting(false);
+    }
+  }
+
+  async function handleSaveLodgifyConnection() {
+    setLodgifyError("");
+    if (!lodgifySelectedPropertyId || !lodgifySelectedRoomId) {
+      setLodgifyError("Seleziona la struttura e la tipologia di camera su Lodgify.");
+      return;
+    }
+    setLodgifySavingConnection(true);
+    const { error } = await supabase
+      .from("properties")
+      .update({
+        lodgify_api_key: lodgifyApiKeyInput.trim(),
+        lodgify_property_id: Number(lodgifySelectedPropertyId),
+        lodgify_room_type_id: Number(lodgifySelectedRoomId),
+      })
+      .eq("id", property.id);
+    setLodgifySavingConnection(false);
+    if (error) {
+      setLodgifyError(error.message);
+      return;
+    }
+    setEditingLodgify(false);
+    setLodgifyOptions(null);
+    setLodgifyApiKeyInput("");
+    loadAll(property.id);
+  }
+
+  async function handleDisconnectLodgify() {
+    await supabase
+      .from("properties")
+      .update({ lodgify_api_key: null, lodgify_property_id: null, lodgify_room_type_id: null })
+      .eq("id", property.id);
+    setEditingLodgify(false);
+    loadAll(property.id);
+  }
+
+  // Non scatta mai da sola: parte solo quando il proprietario clicca
+  // esplicitamente "Applica su Lodgify" dopo aver visto il suggerimento.
+  async function handleApplyCheckToLodgify() {
+    if (!checkResult || !checkResult.suggestion || !selectedPeriod) return;
+    setApplyingCheck(true);
+    setApplyCheckStatus("");
+    try {
+      const resp = await fetch("/api/lodgify/apply-price", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apiKey: property.lodgify_api_key,
+          propertyId: property.lodgify_property_id,
+          roomTypeId: property.lodgify_room_type_id,
+          startDate: selectedPeriod.check_in,
+          endDate: selectedPeriod.check_out,
+          pricePerDay: checkResult.suggestion.newRoom,
+        }),
+      });
+      const body = await resp.json();
+      if (!resp.ok) throw new Error(body.error || "Applicazione del prezzo su Lodgify non riuscita.");
+      setApplyCheckStatus("ok");
+    } catch (err) {
+      setApplyCheckStatus(err.message);
+    } finally {
+      setApplyingCheck(false);
+    }
+  }
+
+  async function handleApplyDayToLodgify(day) {
+    if (!scanResult || !selectedPeriod) return;
+    const daySuggestion = computeSuggestion(
+      day.price,
+      { mean: scanResult.mean, stdDev: scanResult.stdDev, count: scanResult.sampleSize },
+      selectedPeriod.price,
+      config
+    );
+    if (!daySuggestion) return;
+    setApplyingDay(day.date);
+    setApplyDayStatus((s) => ({ ...s, [day.date]: "" }));
+    try {
+      const resp = await fetch("/api/lodgify/apply-price", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apiKey: property.lodgify_api_key,
+          propertyId: property.lodgify_property_id,
+          roomTypeId: property.lodgify_room_type_id,
+          startDate: day.date,
+          endDate: addDaysIso(day.date, 1),
+          pricePerDay: daySuggestion.newRoom,
+        }),
+      });
+      const body = await resp.json();
+      if (!resp.ok) throw new Error(body.error || "Applicazione del prezzo su Lodgify non riuscita.");
+      setApplyDayStatus((s) => ({ ...s, [day.date]: "ok" }));
+    } catch (err) {
+      setApplyDayStatus((s) => ({ ...s, [day.date]: err.message }));
+    } finally {
+      setApplyingDay("");
     }
   }
 
@@ -451,6 +601,110 @@ export default function PropertyPage() {
             </p>
             {calendarLoading && <p className="text-dim">Lettura calendario…</p>}
             {calendarError && <p className="notice notice-error">{calendarError}</p>}
+          </div>
+        )}
+      </div>
+
+      {/* Channel manager (Lodgify) */}
+      <div className="card">
+        <div className="card-header-row">
+          <h2>Channel manager (Lodgify)</h2>
+          {property.lodgify_property_id && !editingLodgify && (
+            <button className="btn btn-ghost" onClick={handleDisconnectLodgify}>
+              Scollega
+            </button>
+          )}
+        </div>
+        <p className="text-dim">
+          Collega Lodgify per applicare con un click i prezzi suggeriti direttamente alla tua struttura. Non
+          cambia mai nulla da solo: resti sempre tu a decidere quando applicare un prezzo.
+        </p>
+
+        {property.lodgify_property_id && property.lodgify_room_type_id && !editingLodgify ? (
+          <div className="stack">
+            <p className="text-dim">
+              Collegata: struttura Lodgify #{property.lodgify_property_id}, camera #{property.lodgify_room_type_id}.
+            </p>
+            <button className="btn btn-ghost" onClick={() => setEditingLodgify(true)}>
+              Modifica collegamento
+            </button>
+          </div>
+        ) : (
+          <div className="stack">
+            <label className="field">
+              <span>Chiave API pubblica di Lodgify</span>
+              <input
+                className="input"
+                type="password"
+                value={lodgifyApiKeyInput}
+                onChange={(e) => setLodgifyApiKeyInput(e.target.value)}
+                placeholder="Impostazioni → Public API, nel tuo account Lodgify"
+              />
+            </label>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={handleTestLodgifyConnection}
+              disabled={lodgifyTesting}
+            >
+              {lodgifyTesting ? "Verifica…" : "Verifica e carica strutture"}
+            </button>
+            {lodgifyError && <p className="notice notice-error">{lodgifyError}</p>}
+
+            {lodgifyOptions && lodgifyOptions.length > 0 && (
+              <>
+                <label className="field">
+                  <span>Struttura su Lodgify</span>
+                  <select
+                    className="input"
+                    value={lodgifySelectedPropertyId}
+                    onChange={(e) => {
+                      setLodgifySelectedPropertyId(e.target.value);
+                      setLodgifySelectedRoomId("");
+                    }}
+                  >
+                    <option value="">Seleziona…</option>
+                    {lodgifyOptions.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {lodgifySelectedPropertyId &&
+                  (() => {
+                    const selectedLodgifyProperty = lodgifyOptions.find(
+                      (p) => String(p.id) === String(lodgifySelectedPropertyId)
+                    );
+                    const rooms = (selectedLodgifyProperty && selectedLodgifyProperty.rooms) || [];
+                    return (
+                      <label className="field">
+                        <span>Tipologia di camera</span>
+                        <select
+                          className="input"
+                          value={lodgifySelectedRoomId}
+                          onChange={(e) => setLodgifySelectedRoomId(e.target.value)}
+                        >
+                          <option value="">Seleziona…</option>
+                          {rooms.map((r) => (
+                            <option key={r.id} value={r.id}>
+                              {r.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    );
+                  })()}
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={handleSaveLodgifyConnection}
+                  disabled={lodgifySavingConnection || !lodgifySelectedRoomId}
+                >
+                  {lodgifySavingConnection ? "Salvataggio…" : "Salva collegamento"}
+                </button>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -622,6 +876,28 @@ export default function PropertyPage() {
                   <span className="text-dim">Nuovo prezzo camera suggerito</span>
                   <strong>{formatEUR(checkResult.suggestion.newRoom)}</strong>
                 </div>
+                {property.lodgify_property_id && property.lodgify_room_type_id && (
+                  <div style={{ marginTop: 4 }}>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={handleApplyCheckToLodgify}
+                      disabled={applyingCheck}
+                    >
+                      {applyingCheck ? "Applico su Lodgify…" : "Applica questo prezzo su Lodgify"}
+                    </button>
+                    {applyCheckStatus === "ok" && (
+                      <p className="notice notice-ok" style={{ marginTop: 8 }}>
+                        Prezzo aggiornato su Lodgify.
+                      </p>
+                    )}
+                    {applyCheckStatus && applyCheckStatus !== "ok" && (
+                      <p className="notice notice-error" style={{ marginTop: 8 }}>
+                        {applyCheckStatus}
+                      </p>
+                    )}
+                  </div>
+                )}
               </>
             )}
             <button className="btn btn-primary" onClick={handleSaveCheck} disabled={savingCheck}>
@@ -651,6 +927,10 @@ export default function PropertyPage() {
                   selectedPeriod.price,
                   config
                 );
+                const canApply = Boolean(
+                  daySuggestion && property.lodgify_property_id && property.lodgify_room_type_id
+                );
+                const dayStatus = applyDayStatus[d.date];
                 return (
                   <div key={d.date} className="period-row">
                     <div className="period-row-main">
@@ -662,7 +942,26 @@ export default function PropertyPage() {
                     <div className="period-row-badges">
                       {daySuggestion && <Badge action={daySuggestion.action} />}
                       {daySuggestion && <span className="text-dim">{formatEUR(daySuggestion.newRoom)}</span>}
+                      {canApply && (
+                        <button
+                          type="button"
+                          className="icon-text-btn"
+                          onClick={() => handleApplyDayToLodgify(d)}
+                          disabled={applyingDay === d.date}
+                        >
+                          {applyingDay === d.date
+                            ? "Applico…"
+                            : dayStatus === "ok"
+                            ? "Applicato ✓"
+                            : "Applica su Lodgify"}
+                        </button>
+                      )}
                     </div>
+                    {dayStatus && dayStatus !== "ok" && (
+                      <p className="notice notice-error" style={{ fontSize: 12, flexBasis: "100%", margin: 0 }}>
+                        {dayStatus}
+                      </p>
+                    )}
                   </div>
                 );
               })}
