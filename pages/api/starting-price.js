@@ -26,8 +26,20 @@
 // affidabile — invece di mescolarli con strutture senza piscina o SPA.
 // Se il confronto ristretto non ha abbastanza campioni si ricade sul
 // confronto per l'intera zona, come prima.
+//
+// Raggio di ricerca: l'endpoint di AirROI non supporta una ricerca per
+// comune o macrozona, solo indirizzo + raggio in miglia (1-10, come da
+// documentazione AirROI). Di default il raggio si allarga da solo
+// (3 → 5 → 10 miglia) finché non trova abbastanza comparabili. Se il
+// proprietario sceglie un raggio a mano dal menu nella scheda struttura,
+// quella scelta sostituisce l'allargamento automatico: si cerca solo a
+// quel raggio, così chi conosce la propria zona (es. una struttura in un
+// comune piccolo vicino a una città molto turistica) può evitare di
+// mescolare mercati molto diversi che un raggio più ampio includerebbe.
 const MIN_COMPARABLES = 5;
-const RADII_MILES = [3, 5, 10]; // allarga la ricerca se i risultati sono pochi
+const RADII_MILES = [3, 5, 10]; // allarga la ricerca se i risultati sono pochi (solo quando il raggio non è scelto a mano)
+const MIN_RADIUS_MILES = 1;
+const MAX_RADIUS_MILES = 10; // limite documentato dall'API di AirROI
 
 // Parole chiave (in inglese, la lingua delle amenities restituite da
 // AirROI) usate per riconoscere ciascun nostro servizio nella lista di
@@ -57,6 +69,9 @@ export default async function handler(req, res) {
   const guests = clampInt(params.guests, 1, 30);
   const propertyType = ["economy", "standard", "luxury"].includes(params.propertyType) ? params.propertyType : "standard";
   const amenities = Array.isArray(params.amenities) ? params.amenities.filter((a) => AMENITY_MATCH_KEYWORDS[a]) : [];
+  // Raggio scelto a mano dal proprietario (facoltativo): se presente e
+  // valido, sostituisce l'allargamento automatico 3→5→10 miglia.
+  const manualRadius = clampInt(params.radius, MIN_RADIUS_MILES, MAX_RADIUS_MILES);
 
   if (!address) {
     return res.status(400).json({ error: "Indirizzo o zona della struttura mancante." });
@@ -71,12 +86,17 @@ export default async function handler(req, res) {
   }
 
   let comparables = [];
-  let usedRadius = RADII_MILES[0];
+  let usedRadius = manualRadius || RADII_MILES[0];
   try {
-    for (const radius of RADII_MILES) {
-      usedRadius = radius;
-      comparables = await fetchComparables({ address, bedrooms, bathrooms, guests, radius, apiKey });
-      if (comparables.length >= MIN_COMPARABLES) break;
+    if (manualRadius) {
+      // Raggio scelto a mano: si cerca solo lì, senza allargare da soli.
+      comparables = await fetchComparables({ address, bedrooms, bathrooms, guests, radius: manualRadius, apiKey });
+    } else {
+      for (const radius of RADII_MILES) {
+        usedRadius = radius;
+        comparables = await fetchComparables({ address, bedrooms, bathrooms, guests, radius, apiKey });
+        if (comparables.length >= MIN_COMPARABLES) break;
+      }
     }
   } catch (err) {
     console.error("starting-price:", err);
@@ -122,8 +142,9 @@ export default async function handler(req, res) {
 
   if (rates.length === 0) {
     return res.status(502).json({
-      error:
-        "Nessuna struttura simile trovata in zona con questi criteri: prova a rivedere camere/bagni/ospiti o l'indirizzo.",
+      error: manualRadius
+        ? `Nessuna struttura simile trovata entro ${manualRadius} miglia con questi criteri: prova ad aumentare il raggio di ricerca o a rivedere camere/bagni/ospiti/indirizzo.`
+        : "Nessuna struttura simile trovata in zona con questi criteri: prova a rivedere camere/bagni/ospiti o l'indirizzo.",
     });
   }
 
@@ -132,6 +153,11 @@ export default async function handler(req, res) {
     totalNearby: comparables.length,
     matchedOnAmenities,
     radiusMiles: usedRadius,
+    manualRadius: Boolean(manualRadius),
+    // Pochi campioni non bloccano il risultato, ma con un raggio scelto a
+    // mano non c'è più l'allargamento automatico che compensava: lo
+    // segnaliamo così l'interfaccia può suggerire di allargare il raggio.
+    lowSample: rates.length < MIN_COMPARABLES,
     min: rates[0],
     max: rates[rates.length - 1],
     p25: percentile(rates, 25),
