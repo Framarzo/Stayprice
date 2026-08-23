@@ -89,6 +89,12 @@ export default function PropertyPage() {
   const [startingPriceLoading, setStartingPriceLoading] = useState(false);
   const [startingPriceError, setStartingPriceError] = useState("");
   const [startingPriceResult, setStartingPriceResult] = useState(null);
+  // Raggio di ricerca scelto a mano (miglia): AirROI non permette di
+  // cercare per comune/macrozona, solo indirizzo + raggio — quindi il
+  // controllo che diamo al proprietario è proprio su questo raggio, per
+  // evitare che una struttura in un comune piccolo finisca confrontata
+  // con una città molto più turistica solo perché è entro pochi km.
+  const [searchRadiusMiles, setSearchRadiusMiles] = useState(3);
 
   // --- impostazioni ---
   const [savingSettings, setSavingSettings] = useState(false);
@@ -307,6 +313,7 @@ export default function PropertyPage() {
           guests: property.max_guests,
           propertyType: property.property_type || "standard",
           amenities: Array.isArray(property.amenities) ? property.amenities : [],
+          radius: searchRadiusMiles,
         }),
       });
       const body = await resp.json();
@@ -1047,6 +1054,25 @@ export default function PropertyPage() {
           Non sai ancora da che prezzo partire per un periodo nuovo? Confronta la struttura con quelle simili
           nella tua zona (stessa fascia, camere, bagni e ospiti) usando dati di mercato reali.
         </p>
+        <label className="field" style={{ maxWidth: 240 }}>
+          <span>Raggio di ricerca</span>
+          <select
+            className="input"
+            value={searchRadiusMiles}
+            onChange={(e) => setSearchRadiusMiles(Number(e.target.value))}
+          >
+            {[1, 2, 3, 5, 7, 10].map((r) => (
+              <option key={r} value={r}>
+                {r} {r === 1 ? "miglio" : "miglia"}
+              </option>
+            ))}
+          </select>
+        </label>
+        <p className="text-dim" style={{ fontSize: 12.5, marginTop: -8 }}>
+          AirROI (la fonte dei dati di mercato) non permette di cercare per comune o macrozona, solo per
+          indirizzo entro un certo raggio: se la tua struttura è in un comune piccolo vicino a una città molto
+          turistica, prova a restringere il raggio per non mescolare i due mercati.
+        </p>
         <button
           type="button"
           className="btn btn-secondary"
@@ -1078,6 +1104,12 @@ export default function PropertyPage() {
                   strutture simili in zona, non solo su quelle con piscina/SPA/ecc. come la tua.
                 </p>
               )
+            )}
+            {startingPriceResult.stats.lowSample && (
+              <p className="text-dim" style={{ fontSize: 12.5, marginTop: -4 }}>
+                Solo {startingPriceResult.stats.count} strutture trovate entro {startingPriceResult.stats.radiusMiles}{" "}
+                miglia: il confronto è meno solido. Prova ad aumentare il raggio di ricerca qui sopra.
+              </p>
             )}
             <div className="suggestion-row">
               <span className="text-dim">Tariffe simili: dal 25° al 75° percentile</span>
