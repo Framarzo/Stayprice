@@ -306,6 +306,7 @@ export default function PropertyPage() {
           bathrooms: property.bathrooms,
           guests: property.max_guests,
           propertyType: property.property_type || "standard",
+          amenities: Array.isArray(property.amenities) ? property.amenities : [],
         }),
       });
       const body = await resp.json();
@@ -1063,6 +1064,21 @@ export default function PropertyPage() {
               </span>
               <strong>{startingPriceResult.stats.count}</strong>
             </div>
+            {startingPriceResult.stats.matchedOnAmenities ? (
+              <p className="text-dim" style={{ fontSize: 12.5, marginTop: -4 }}>
+                Confronto ristretto alle {startingPriceResult.stats.count} strutture (su{" "}
+                {startingPriceResult.stats.totalNearby} in zona) che condividono almeno uno dei servizi che hai
+                selezionato (piscina, vasca idromassaggio, ecc.) — non un prezzo medio di zona uguale per tutti.
+              </p>
+            ) : (
+              Array.isArray(property.amenities) && property.amenities.length > 0 && (
+                <p className="text-dim" style={{ fontSize: 12.5, marginTop: -4 }}>
+                  In zona non ci sono abbastanza strutture con gli stessi servizi selezionati per un confronto
+                  affidabile: il prezzo qui sotto si basa su tutte le {startingPriceResult.stats.totalNearby}{" "}
+                  strutture simili in zona, non solo su quelle con piscina/SPA/ecc. come la tua.
+                </p>
+              )
+            )}
             <div className="suggestion-row">
               <span className="text-dim">Tariffe simili: dal 25° al 75° percentile</span>
               <strong>
