@@ -6,11 +6,15 @@ import { supabase } from "../../lib/supabaseClient";
 import {
   CONFIDENCE_LABELS,
   DEFAULT_CONFIG,
+  PROPERTY_TYPE_DESCRIPTIONS,
+  PROPERTY_TYPE_LABELS,
+  PROPERTY_TYPES,
   Badge,
   CalendarPicker,
   SettingsSlider,
   addDaysIso,
   computeSuggestion,
+  configForPropertyType,
   formatEUR,
   formatPct,
   formatZ,
@@ -67,7 +71,18 @@ export default function PropertyPage() {
   const [editingProperty, setEditingProperty] = useState(false);
   const [editAirport, setEditAirport] = useState("");
   const [editIcalUrl, setEditIcalUrl] = useState("");
+  const [editPropertyType, setEditPropertyType] = useState("standard");
+  const [editAddress, setEditAddress] = useState("");
+  const [editBedrooms, setEditBedrooms] = useState("");
+  const [editBathrooms, setEditBathrooms] = useState("");
+  const [editMaxGuests, setEditMaxGuests] = useState("");
   const [savingProperty, setSavingProperty] = useState(false);
+
+  // --- prezzo di partenza suggerito (strutture simili in zona, via
+  // AirROI) — non tocca il listino da solo: solo su richiesta esplicita ---
+  const [startingPriceLoading, setStartingPriceLoading] = useState(false);
+  const [startingPriceError, setStartingPriceError] = useState("");
+  const [startingPriceResult, setStartingPriceResult] = useState(null);
 
   // --- impostazioni ---
   const [savingSettings, setSavingSettings] = useState(false);
@@ -83,6 +98,12 @@ export default function PropertyPage() {
   const [lodgifySelectedPropertyId, setLodgifySelectedPropertyId] = useState("");
   const [lodgifySelectedRoomId, setLodgifySelectedRoomId] = useState("");
   const [lodgifySavingConnection, setLodgifySavingConnection] = useState(false);
+
+  // Lodgify rifiuta le tariffe per data specifica finché la camera non ha
+  // già una tariffa di base impostata: questo la crea/aggiorna una volta.
+  const [defaultRateInput, setDefaultRateInput] = useState("");
+  const [settingDefaultRate, setSettingDefaultRate] = useState(false);
+  const [defaultRateStatus, setDefaultRateStatus] = useState(""); // "" | "ok" | messaggio di errore
 
   const [applyingCheck, setApplyingCheck] = useState(false);
   const [applyCheckStatus, setApplyCheckStatus] = useState(""); // "" | "ok" | messaggio di errore
@@ -111,6 +132,11 @@ export default function PropertyPage() {
     setProperty(propData);
     setEditAirport(propData.airport_code || "");
     setEditIcalUrl(propData.ical_url || "");
+    setEditPropertyType(propData.property_type || "standard");
+    setEditAddress(propData.address || "");
+    setEditBedrooms(propData.bedrooms != null ? String(propData.bedrooms) : "");
+    setEditBathrooms(propData.bathrooms != null ? String(propData.bathrooms) : "");
+    setEditMaxGuests(propData.max_guests != null ? String(propData.max_guests) : "");
     setListino(listinoData || []);
     setFlightChecks(checksData || []);
     setConfig(
@@ -125,7 +151,11 @@ export default function PropertyPage() {
             // quel caso si usa il valore di default finché non salvi di nuovo.
             zThreshold: settingsData.z_threshold != null ? Number(settingsData.z_threshold) : DEFAULT_CONFIG.zThreshold,
           }
-        : DEFAULT_CONFIG
+        : // Nessuna impostazione salvata ancora: si parte dal profilo
+          // consigliato per la fascia della struttura, non da un unico
+          // default uguale per tutti (vedi PROPERTY_TYPE_CONFIGS in
+          // components/ui.js).
+          configForPropertyType(propData.property_type)
     );
   }, []);
 
@@ -241,6 +271,43 @@ export default function PropertyPage() {
     await supabase.from("listino").delete().eq("id", periodId);
     if (selectedPeriodId === periodId) setSelectedPeriodId("");
     loadAll(property.id);
+  }
+
+  // Confronta la struttura con strutture simili in zona (stessa logica di
+  // fascia usata anche per il modello voli) per proporre un prezzo di
+  // partenza — non tocca mai il listino da solo, solo su richiesta.
+  async function handleSuggestStartingPrice() {
+    setStartingPriceError("");
+    setStartingPriceResult(null);
+    if (!property.address) {
+      setStartingPriceError("Imposta prima indirizzo/zona, camere, bagni e ospiti nella card Struttura.");
+      return;
+    }
+    if (property.bedrooms == null || property.bathrooms == null || property.max_guests == null) {
+      setStartingPriceError("Imposta prima camere, bagni e ospiti massimi nella card Struttura.");
+      return;
+    }
+    setStartingPriceLoading(true);
+    try {
+      const resp = await fetch("/api/starting-price", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          address: property.address,
+          bedrooms: property.bedrooms,
+          bathrooms: property.bathrooms,
+          guests: property.max_guests,
+          propertyType: property.property_type || "standard",
+        }),
+      });
+      const body = await resp.json();
+      if (!resp.ok) throw new Error(body.error || "Suggerimento del prezzo di partenza non riuscito.");
+      setStartingPriceResult(body);
+    } catch (err) {
+      setStartingPriceError(err.message);
+    } finally {
+      setStartingPriceLoading(false);
+    }
   }
 
   async function handleRunCheck(e) {
@@ -403,6 +470,39 @@ export default function PropertyPage() {
     loadAll(property.id);
   }
 
+  // Lodgify richiede una tariffa di base già impostata prima di accettare
+  // tariffe per data specifica ("The default rate is required."): questo la
+  // crea/aggiorna una tantum, sempre solo su click esplicito.
+  async function handleSetDefaultRate() {
+    setDefaultRateStatus("");
+    const price = parseFloat(defaultRateInput);
+    if (!isFinite(price) || price <= 0) {
+      setDefaultRateStatus("Inserisci un prezzo valido.");
+      return;
+    }
+    setSettingDefaultRate(true);
+    try {
+      const resp = await fetch("/api/lodgify/apply-price", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apiKey: property.lodgify_api_key,
+          propertyId: property.lodgify_property_id,
+          roomTypeId: property.lodgify_room_type_id,
+          pricePerDay: price,
+          setDefault: true,
+        }),
+      });
+      const body = await resp.json();
+      if (!resp.ok) throw new Error(body.error || "Impostazione della tariffa di base non riuscita.");
+      setDefaultRateStatus("ok");
+    } catch (err) {
+      setDefaultRateStatus(err.message);
+    } finally {
+      setSettingDefaultRate(false);
+    }
+  }
+
   // Non scatta mai da sola: parte solo quando il proprietario clicca
   // esplicitamente "Applica su Lodgify" dopo aver visto il suggerimento.
   async function handleApplyCheckToLodgify() {
@@ -494,6 +594,11 @@ export default function PropertyPage() {
       .update({
         airport_code: (editAirport.trim() || "BDS").toUpperCase(),
         ical_url: editIcalUrl.trim() || null,
+        property_type: editPropertyType,
+        address: editAddress.trim() || null,
+        bedrooms: editBedrooms !== "" ? parseInt(editBedrooms, 10) : null,
+        bathrooms: editBathrooms !== "" ? parseFloat(editBathrooms) : null,
+        max_guests: editMaxGuests !== "" ? parseInt(editMaxGuests, 10) : null,
       })
       .eq("id", property.id);
     setSavingProperty(false);
@@ -587,6 +692,72 @@ export default function PropertyPage() {
                 placeholder="https://..."
               />
             </label>
+            <label className="field">
+              <span>Fascia della struttura</span>
+              <select
+                className="input"
+                value={editPropertyType}
+                onChange={(e) => setEditPropertyType(e.target.value)}
+              >
+                {PROPERTY_TYPES.map((t) => (
+                  <option key={t} value={t}>
+                    {PROPERTY_TYPE_LABELS[t]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p className="text-dim" style={{ fontSize: 12.5, marginTop: -8 }}>
+              {PROPERTY_TYPE_DESCRIPTIONS[editPropertyType]}
+            </p>
+            <label className="field">
+              <span>Indirizzo o zona (per confrontarla con strutture simili)</span>
+              <input
+                className="input"
+                value={editAddress}
+                onChange={(e) => setEditAddress(e.target.value)}
+                placeholder="es. San Pietro Vernotico, BR, Italia"
+              />
+            </label>
+            <div className="two-col">
+              <label className="field">
+                <span>Camere</span>
+                <input
+                  className="input"
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={editBedrooms}
+                  onChange={(e) => setEditBedrooms(e.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>Bagni</span>
+                <input
+                  className="input"
+                  type="number"
+                  min="0"
+                  step="0.5"
+                  value={editBathrooms}
+                  onChange={(e) => setEditBathrooms(e.target.value)}
+                />
+              </label>
+            </div>
+            <label className="field">
+              <span>Ospiti massimi</span>
+              <input
+                className="input"
+                type="number"
+                min="1"
+                step="1"
+                value={editMaxGuests}
+                onChange={(e) => setEditMaxGuests(e.target.value)}
+              />
+            </label>
+            <p className="text-dim" style={{ fontSize: 12.5, marginTop: -8 }}>
+              Indirizzo, camere, bagni e ospiti servono solo per il prezzo di partenza suggerito (confronto con
+              strutture simili in zona), qui sotto in "Disponibilità e prezzi" — sono facoltativi per il resto
+              dell'app.
+            </p>
             <button type="submit" className="btn btn-primary" disabled={savingProperty}>
               {savingProperty ? "Salvataggio…" : "Salva"}
             </button>
@@ -594,10 +765,28 @@ export default function PropertyPage() {
         ) : (
           <div className="stack">
             <p className="text-dim">
+              Fascia della struttura:{" "}
+              <strong className="text-ink">
+                {PROPERTY_TYPE_LABELS[property.property_type] || PROPERTY_TYPE_LABELS.standard}
+              </strong>
+            </p>
+            <p className="text-dim">
               Aeroporto di riferimento: <strong className="text-ink">{property.airport_code}</strong>
             </p>
             <p className="text-dim">
               Calendario iCal: {property.ical_url ? <strong className="text-ink">collegato</strong> : "non collegato"}
+            </p>
+            <p className="text-dim">
+              Indirizzo/zona:{" "}
+              <strong className="text-ink">{property.address || "non impostato"}</strong>
+              {property.bedrooms != null || property.bathrooms != null || property.max_guests != null ? (
+                <>
+                  {" "}
+                  · {property.bedrooms != null ? `${property.bedrooms} camere` : "camere n/d"},{" "}
+                  {property.bathrooms != null ? `${property.bathrooms} bagni` : "bagni n/d"},{" "}
+                  {property.max_guests != null ? `${property.max_guests} ospiti max` : "ospiti n/d"}
+                </>
+              ) : null}
             </p>
             {calendarLoading && <p className="text-dim">Lettura calendario…</p>}
             {calendarError && <p className="notice notice-error">{calendarError}</p>}
@@ -628,6 +817,38 @@ export default function PropertyPage() {
             <button className="btn btn-ghost" onClick={() => setEditingLodgify(true)}>
               Modifica collegamento
             </button>
+
+            <div className="stack" style={{ marginTop: 8, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
+              <p className="text-dim">
+                Lodgify richiede una tariffa di base già impostata prima di accettare le tariffe per date
+                specifiche che questa app applica: se "Applica su Lodgify" dà l'errore "The default rate is
+                required", impostala qui una volta sola (puoi cambiarla in ogni momento).
+              </p>
+              <label className="field">
+                <span>Tariffa di base (€/notte)</span>
+                <input
+                  className="input"
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={defaultRateInput}
+                  onChange={(e) => setDefaultRateInput(e.target.value)}
+                  placeholder="es. 120"
+                />
+              </label>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={handleSetDefaultRate}
+                disabled={settingDefaultRate}
+              >
+                {settingDefaultRate ? "Imposto…" : "Imposta tariffa di base su Lodgify"}
+              </button>
+              {defaultRateStatus === "ok" && <p className="notice notice-ok">Tariffa di base impostata su Lodgify.</p>}
+              {defaultRateStatus && defaultRateStatus !== "ok" && (
+                <p className="notice notice-error">{defaultRateStatus}</p>
+              )}
+            </div>
           </div>
         ) : (
           <div className="stack">
@@ -734,6 +955,50 @@ export default function PropertyPage() {
             );
           })}
         </div>
+
+        <h3 className="subheading">Prezzo di partenza suggerito</h3>
+        <p className="text-dim">
+          Non sai ancora da che prezzo partire per un periodo nuovo? Confronta la struttura con quelle simili
+          nella tua zona (stessa fascia, camere, bagni e ospiti) usando dati di mercato reali.
+        </p>
+        <button
+          type="button"
+          className="btn btn-secondary"
+          onClick={handleSuggestStartingPrice}
+          disabled={startingPriceLoading}
+        >
+          {startingPriceLoading ? "Confronto in corso…" : "Suggerisci prezzo di partenza"}
+        </button>
+        {startingPriceError && <p className="notice notice-error">{startingPriceError}</p>}
+        {startingPriceResult && (
+          <div className="suggestion-box">
+            <div className="suggestion-row">
+              <span className="text-dim">
+                Strutture simili trovate (entro {startingPriceResult.stats.radiusMiles} miglia)
+              </span>
+              <strong>{startingPriceResult.stats.count}</strong>
+            </div>
+            <div className="suggestion-row">
+              <span className="text-dim">Tariffe simili: dal 25° al 75° percentile</span>
+              <strong>
+                {formatEUR(startingPriceResult.stats.p25)} – {formatEUR(startingPriceResult.stats.p75)}
+              </strong>
+            </div>
+            <div className="suggestion-row">
+              <span className="text-dim">
+                Prezzo di partenza suggerito ({PROPERTY_TYPE_LABELS[startingPriceResult.propertyType]})
+              </span>
+              <strong>{formatEUR(startingPriceResult.suggestedPrice)}</strong>
+            </div>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => setNewPrice(String(startingPriceResult.suggestedPrice))}
+            >
+              Usa questo prezzo qui sotto
+            </button>
+          </div>
+        )}
 
         <h3 className="subheading">Aggiungi periodo</h3>
         <form onSubmit={handleAddListino} className="stack">
@@ -1015,8 +1280,18 @@ export default function PropertyPage() {
       <div className="card">
         <h2>Impostazioni</h2>
         <p className="text-dim">
-          Regolano quanto il suggerimento di prezzo reagisce alla variazione del prezzo dei voli.
+          Regolano quanto il suggerimento di prezzo reagisce alla variazione del prezzo dei voli. I valori sotto
+          partono dal profilo consigliato per la fascia "{PROPERTY_TYPE_LABELS[property.property_type] || PROPERTY_TYPE_LABELS.standard}"
+          di questa struttura, ma restano modificabili liberamente.
         </p>
+        <button
+          type="button"
+          className="btn btn-ghost"
+          style={{ marginBottom: 14 }}
+          onClick={() => setConfig(configForPropertyType(property.property_type))}
+        >
+          Usa i valori consigliati per {PROPERTY_TYPE_LABELS[property.property_type] || PROPERTY_TYPE_LABELS.standard}
+        </button>
         <SettingsSlider
           label="Elasticità"
           value={config.elasticity}
