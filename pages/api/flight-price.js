@@ -47,6 +47,7 @@ export default async function handler(req, res) {
         return res.status(200).json({
           price: result.min,
           average: result.average,
+          stdDev: result.stdDev,
           sampleSize: result.count,
           averageBasis: result.basis,
           source: "google_flights",
@@ -69,6 +70,7 @@ export default async function handler(req, res) {
         return res.status(200).json({
           price: result.min,
           average: result.average,
+          stdDev: result.stdDev,
           sampleSize: result.count,
           averageBasis: "mese",
           source: "travelpayouts",
@@ -101,6 +103,19 @@ function average(nums) {
   return nums.reduce((s, n) => s + n, 0) / nums.length;
 }
 
+// Deviazione standard campionaria dei prezzi del pool usato per la media.
+// Serve al front-end per giudicare quanto è "insolito" (in deviazioni
+// standard, non in una % fissa uguale per ogni rotta) il prezzo trovato
+// oggi rispetto alla normale variabilità storica di quella rotta. Con un
+// solo campione la deviazione standard non è definita: si restituisce 0 e
+// il front-end ricade su una soglia percentuale fissa di riserva.
+function stdDev(nums) {
+  if (nums.length < 2) return 0;
+  const m = average(nums);
+  const variance = nums.reduce((s, x) => s + (x - m) ** 2, 0) / (nums.length - 1);
+  return Math.sqrt(variance);
+}
+
 function shiftDate(iso, offsetDays) {
   const d = new Date(iso + "T00:00:00Z");
   d.setUTCDate(d.getUTCDate() + offsetDays);
@@ -125,7 +140,7 @@ async function fetchFromSerpApi({ origin, destination, departureDate, returnDate
   // (un periodo di settimane/mesi, non un singolo giorno).
   const history = extractPriceHistory(primaryData);
   if (history.length >= MIN_HISTORY_SAMPLE) {
-    return { min, average: average(history), count: history.length, basis: "storico" };
+    return { min, average: average(history), stdDev: stdDev(history), count: history.length, basis: "storico" };
   }
 
   // 2) Fallback: allarga la ricerca a qualche giorno vicino alla data
@@ -151,11 +166,17 @@ async function fetchFromSerpApi({ origin, destination, departureDate, returnDate
   }
 
   if (pool.length > primaryCandidates.length) {
-    return { min, average: average(pool), count: pool.length, basis: "date vicine" };
+    return { min, average: average(pool), stdDev: stdDev(pool), count: pool.length, basis: "date vicine" };
   }
 
   // 3) Ultima risorsa: media dei soli voli trovati per la data esatta.
-  return { min, average: average(primaryCandidates), count: primaryCandidates.length, basis: "singola data" };
+  return {
+    min,
+    average: average(primaryCandidates),
+    stdDev: stdDev(primaryCandidates),
+    count: primaryCandidates.length,
+    basis: "singola data",
+  };
 }
 
 async function fetchSerpApiRaw({ origin, destination, departureDate, returnDate, apiKey }) {
@@ -226,5 +247,5 @@ async function fetchFromTravelpayouts({ origin, destination, departureDate, toke
   // periodo più lungo per costruzione.
   const prices = data.data.map((d) => Number(d.price)).filter((p) => isFinite(p) && p > 0);
   if (prices.length === 0) return null;
-  return { min: Math.min(...prices), average: average(prices), count: prices.length };
+  return { min: Math.min(...prices), average: average(prices), stdDev: stdDev(prices), count: prices.length };
 }
