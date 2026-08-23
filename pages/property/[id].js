@@ -4,6 +4,7 @@ import Link from "next/link";
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { supabase } from "../../lib/supabaseClient";
 import {
+  CONFIDENCE_LABELS,
   DEFAULT_CONFIG,
   Badge,
   CalendarPicker,
@@ -11,6 +12,8 @@ import {
   computeSuggestion,
   formatEUR,
   formatPct,
+  formatZ,
+  isoToLabel,
   periodLabelFromDates,
   todayIso,
 } from "../../components/ui";
@@ -53,6 +56,12 @@ export default function PropertyPage() {
   const [checkResult, setCheckResult] = useState(null); // { flightPrice, source, baseline, suggestion }
   const [savingCheck, setSavingCheck] = useState(false);
 
+  // --- analisi periodo: quali giorni del periodo hanno il calo di prezzo
+  // volo più significativo, con un suggerimento di prezzo per ciascuno ---
+  const [scanning, setScanning] = useState(false);
+  const [scanError, setScanError] = useState("");
+  const [scanResult, setScanResult] = useState(null); // { days, mean, stdDev, sampleSize, ... }
+
   // --- modifica struttura ---
   const [editingProperty, setEditingProperty] = useState(false);
   const [editAirport, setEditAirport] = useState("");
@@ -93,6 +102,10 @@ export default function PropertyPage() {
             capUp: Number(settingsData.cap_up),
             capDown: Number(settingsData.cap_down),
             threshold: Number(settingsData.threshold),
+            // z_threshold è una colonna nuova: finché non esegui la migrazione
+            // SQL sul database, per gli utenti esistenti non c'è ancora — in
+            // quel caso si usa il valore di default finché non salvi di nuovo.
+            zThreshold: settingsData.z_threshold != null ? Number(settingsData.z_threshold) : DEFAULT_CONFIG.zThreshold,
           }
         : DEFAULT_CONFIG
     );
@@ -244,11 +257,14 @@ export default function PropertyPage() {
       // questa tratta calcolato su un periodo più lungo (storico prezzi
       // della rotta, o in fallback qualche giorno vicino alla data
       // richiesta), non il prezzo di un singolo giorno né lo storico dei
-      // controlli salvati manualmente in passato.
+      // controlli salvati manualmente in passato. Insieme alla media si usa
+      // anche la deviazione standard dello stesso pool di voli: il
+      // suggerimento non scatta più a una % fissa uguale per ogni rotta, ma
+      // quando il prezzo di oggi è statisticamente insolito per QUESTA
+      // rotta (vedi computeSuggestion in components/ui.js).
       const baseline = body.average;
-      const suggestion = baseline
-        ? computeSuggestion(body.price, baseline, selectedPeriod.price, config)
-        : null;
+      const stats = { mean: body.average, stdDev: body.stdDev, count: body.sampleSize };
+      const suggestion = baseline ? computeSuggestion(body.price, stats, selectedPeriod.price, config) : null;
 
       setCheckResult({
         flightPrice: body.price,
@@ -263,6 +279,40 @@ export default function PropertyPage() {
       setCheckError(err.message);
     } finally {
       setChecking(false);
+    }
+  }
+
+  async function handleScanPeriod() {
+    setScanError("");
+    setScanResult(null);
+    if (!selectedPeriod) {
+      setScanError("Seleziona prima un periodo dal listino.");
+      return;
+    }
+    if (!origin.trim()) {
+      setScanError("Inserisci l'aeroporto di partenza.");
+      return;
+    }
+    setScanning(true);
+
+    try {
+      const resp = await fetch("/api/flight-price-scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          origin: origin.trim(),
+          destination: property.airport_code,
+          startDate: selectedPeriod.check_in,
+          endDate: selectedPeriod.check_out,
+        }),
+      });
+      const body = await resp.json();
+      if (!resp.ok) throw new Error(body.error || "Analisi del periodo non riuscita.");
+      setScanResult(body);
+    } catch (err) {
+      setScanError(err.message);
+    } finally {
+      setScanning(false);
     }
   }
 
@@ -313,6 +363,7 @@ export default function PropertyPage() {
         cap_up: config.capUp,
         cap_down: config.capDown,
         threshold: config.threshold,
+        z_threshold: config.zThreshold,
       },
       { onConflict: "property_id" }
     );
@@ -460,7 +511,10 @@ export default function PropertyPage() {
         <h2>Controllo rapido</h2>
         <p className="text-dim">
           Cerca il prezzo attuale di un volo per un periodo del listino e confrontalo con il prezzo medio dei
-          voli su quella rotta osservato in un periodo più lungo, non solo in quel singolo giorno.
+          voli su quella rotta osservato in un periodo più lungo, non solo in quel singolo giorno. Se il periodo
+          è lungo (una settimana, un mese), puoi anche analizzarlo giorno per giorno per scoprire quali date
+          hanno il calo di prezzo dei voli più significativo, con un suggerimento di prezzo specifico per quei
+          giorni.
         </p>
         <form onSubmit={handleRunCheck} className="stack">
           <label className="field">
@@ -493,10 +547,16 @@ export default function PropertyPage() {
               required
             />
           </label>
-          <button type="submit" className="btn btn-primary" disabled={checking}>
-            {checking ? "Ricerca…" : "Cerca prezzo volo attuale"}
-          </button>
+          <div className="two-col">
+            <button type="submit" className="btn btn-primary" disabled={checking}>
+              {checking ? "Ricerca…" : "Cerca prezzo volo attuale"}
+            </button>
+            <button type="button" className="btn btn-secondary" onClick={handleScanPeriod} disabled={scanning}>
+              {scanning ? "Analisi in corso…" : "Analizza tutto il periodo"}
+            </button>
+          </div>
           {checkError && <p className="notice notice-error">{checkError}</p>}
+          {scanError && <p className="notice notice-error">{scanError}</p>}
         </form>
 
         {checkResult && (
@@ -538,6 +598,23 @@ export default function PropertyPage() {
                   <strong>{formatPct(checkResult.suggestion.varPct)}</strong>
                 </div>
                 <div className="suggestion-row">
+                  <span className="text-dim">Scostamento statistico (deviazioni standard)</span>
+                  <strong>{formatZ(checkResult.suggestion.z)}</strong>
+                </div>
+                <div className="suggestion-row">
+                  <span className="text-dim">Affidabilità del dato</span>
+                  <strong>
+                    {CONFIDENCE_LABELS[checkResult.suggestion.confidenceLevel]}
+                    {checkResult.suggestion.n ? ` (su ${checkResult.suggestion.n} voli storici)` : ""}
+                  </strong>
+                </div>
+                {!checkResult.suggestion.significant && (
+                  <p className="text-dim" style={{ fontSize: 12.5, marginTop: -4 }}>
+                    Lo scostamento non è abbastanza insolito per questa rotta (o i dati storici sono troppo pochi
+                    per giudicarlo): il sistema preferisce non proporre variazioni non giustificate dai dati.
+                  </p>
+                )}
+                <div className="suggestion-row">
                   <span className="text-dim">Suggerimento</span>
                   <Badge action={checkResult.suggestion.action} />
                 </div>
@@ -550,6 +627,51 @@ export default function PropertyPage() {
             <button className="btn btn-primary" onClick={handleSaveCheck} disabled={savingCheck}>
               {savingCheck ? "Salvataggio…" : "Salva controllo"}
             </button>
+          </div>
+        )}
+
+        {scanResult && (
+          <div className="suggestion-box">
+            <h3 className="subheading" style={{ marginTop: 0 }}>
+              Giorni del periodo per calo di prezzo del volo
+            </h3>
+            <p className="text-dim" style={{ fontSize: 12.5 }}>
+              {scanResult.scannedDays < scanResult.totalDaysInPeriod
+                ? `Il periodo ha ${scanResult.totalDaysInPeriod} giorni: ne sono stati analizzati ${scanResult.scannedDays}, distribuiti su tutto l'intervallo, per contenere il numero di ricerche.`
+                : `Tutti i ${scanResult.totalDaysInPeriod} giorni del periodo sono stati analizzati.`}{" "}
+              Prezzo medio del volo nel periodo: {formatEUR(scanResult.mean)} (su {scanResult.sampleSize} giorni con
+              voli trovati). I giorni sono ordinati dal calo di prezzo più significativo al rialzo più
+              significativo.
+            </p>
+            <div className="period-list">
+              {scanResult.days.map((d) => {
+                const daySuggestion = computeSuggestion(
+                  d.price,
+                  { mean: scanResult.mean, stdDev: scanResult.stdDev, count: scanResult.sampleSize },
+                  selectedPeriod.price,
+                  config
+                );
+                return (
+                  <div key={d.date} className="period-row">
+                    <div className="period-row-main">
+                      <strong>{isoToLabel(d.date)}</strong>
+                      <span className="text-dim">
+                        Volo: {formatEUR(d.price)} ({formatPct(d.varPct)} vs media del periodo, {formatZ(d.z)})
+                      </span>
+                    </div>
+                    <div className="period-row-badges">
+                      {daySuggestion && <Badge action={daySuggestion.action} />}
+                      {daySuggestion && <span className="text-dim">{formatEUR(daySuggestion.newRoom)}</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            {scanResult.skippedDates && scanResult.skippedDates.length > 0 && (
+              <p className="text-dim" style={{ fontSize: 12.5 }}>
+                Nessun volo trovato per: {scanResult.skippedDates.map((d) => isoToLabel(d)).join(", ")}.
+              </p>
+            )}
           </div>
         )}
 
@@ -624,7 +746,21 @@ export default function PropertyPage() {
           onChange={(v) => setConfig((c) => ({ ...c, capDown: v }))}
         />
         <SettingsSlider
-          label="Soglia minima di variazione"
+          label="Sensibilità statistica (deviazioni standard)"
+          value={config.zThreshold}
+          min={0.3}
+          max={3}
+          step={0.1}
+          display={`${config.zThreshold.toFixed(1)}σ`}
+          onChange={(v) => setConfig((c) => ({ ...c, zThreshold: v }))}
+        />
+        <p className="text-dim" style={{ fontSize: 12.5, marginTop: -8, marginBottom: 14 }}>
+          Determina quanto il prezzo del volo deve discostarsi dalla normale variabilità storica di quella rotta,
+          prima che venga proposta una variazione di prezzo. Un valore più basso rende il suggerimento più
+          reattivo, uno più alto più prudente.
+        </p>
+        <SettingsSlider
+          label="Soglia minima di variazione (riserva, senza storico)"
           value={config.threshold}
           min={0}
           max={20}
@@ -632,6 +768,9 @@ export default function PropertyPage() {
           display={`${config.threshold}%`}
           onChange={(v) => setConfig((c) => ({ ...c, threshold: v }))}
         />
+        <p className="text-dim" style={{ fontSize: 12.5, marginTop: -8, marginBottom: 14 }}>
+          Usata solo quando non c'è ancora abbastanza storico prezzi per calcolare la variabilità della rotta.
+        </p>
         <button className="btn btn-primary" onClick={handleSaveSettings} disabled={savingSettings}>
           {savingSettings ? "Salvataggio…" : "Salva impostazioni"}
         </button>
