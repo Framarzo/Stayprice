@@ -41,6 +41,56 @@ export function configForPropertyType(propertyType) {
   return PROPERTY_TYPE_CONFIGS[propertyType] || DEFAULT_CONFIG;
 }
 
+// Servizi e caratteristiche che il mercato associa più spesso a una
+// struttura di fascia alta (piscina, SPA, vista mare, ecc.) rispetto a
+// servizi più "di base" comuni anche in strutture economy/standard (aria
+// condizionata, parcheggio). Servono per calcolare un SUGGERIMENTO di
+// fascia — non per deciderla al posto del proprietario: la fascia resta
+// sempre una scelta manuale, modificabile in qualunque momento, perché il
+// mercato reale ha eccezioni che nessuna lista fissa può catturare del
+// tutto.
+export const AMENITIES = [
+  { key: "pool", label: "Piscina", tier: "luxury" },
+  { key: "sauna", label: "Sauna", tier: "luxury" },
+  { key: "jacuzzi", label: "Vasca idromassaggio", tier: "luxury" },
+  { key: "spa", label: "SPA", tier: "luxury" },
+  { key: "sea_view", label: "Vista mare / panoramica", tier: "luxury" },
+  { key: "private_chef_kitchen", label: "Cucina attrezzata / chef privato", tier: "luxury" },
+  { key: "gym", label: "Palestra", tier: "luxury" },
+  { key: "daily_cleaning", label: "Pulizie giornaliere incluse", tier: "basic" },
+  { key: "breakfast", label: "Colazione inclusa", tier: "basic" },
+  { key: "air_conditioning", label: "Aria condizionata", tier: "basic" },
+  { key: "free_parking", label: "Parcheggio privato gratuito", tier: "basic" },
+];
+
+export const AMENITY_LABELS = Object.fromEntries(AMENITIES.map((a) => [a.key, a.label]));
+
+// I servizi "luxury" (piscina, SPA, ecc.) pesano più di quelli "basic"
+// (aria condizionata, parcheggio — comuni anche fuori dalla fascia alta).
+// Una struttura molto spaziosa rispetto al numero di camere è un ulteriore
+// indizio di fascia alta, a prescindere dai servizi elencati.
+const LUXURY_AMENITY_WEIGHT = 2;
+const BASIC_AMENITY_WEIGHT = 1;
+const SIZE_PER_BEDROOM_LUXURY_THRESHOLD = 40; // m² a camera, oltre cui la struttura si considera molto spaziosa
+const LUXURY_SCORE_THRESHOLD = 6; // es. 3 servizi "luxury", o 2 + spazio abbondante
+const STANDARD_SCORE_THRESHOLD = 2; // es. 1 servizio "luxury", o 2 servizi "basic"
+
+export function suggestPropertyTypeFromAmenities({ amenities, sizeSqm, bedrooms }) {
+  const list = Array.isArray(amenities) ? amenities : [];
+  let score = 0;
+  for (const a of AMENITIES) {
+    if (list.includes(a.key)) score += a.tier === "luxury" ? LUXURY_AMENITY_WEIGHT : BASIC_AMENITY_WEIGHT;
+  }
+  const size = Number(sizeSqm);
+  const rooms = Number(bedrooms);
+  if (isFinite(size) && size > 0 && isFinite(rooms) && rooms > 0 && size / rooms >= SIZE_PER_BEDROOM_LUXURY_THRESHOLD) {
+    score += LUXURY_AMENITY_WEIGHT;
+  }
+  if (score >= LUXURY_SCORE_THRESHOLD) return "luxury";
+  if (score >= STANDARD_SCORE_THRESHOLD) return "standard";
+  return "economy";
+}
+
 export function clamp(n, min, max) {
   return Math.min(max, Math.max(min, n));
 }
