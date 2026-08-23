@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { TrendingUp, TrendingDown, Minus, Info, ChevronLeft, ChevronRight, Calendar as CalendarIcon } from "lucide-react";
 
-export const DEFAULT_CONFIG = { elasticity: 0.4, capUp: 20, capDown: 15, threshold: 5 };
+export const DEFAULT_CONFIG = { elasticity: 0.4, capUp: 20, capDown: 15, threshold: 5, zThreshold: 1 };
 const WEEKDAYS_IT = ["L", "M", "M", "G", "V", "S", "D"];
 
 export function clamp(n, min, max) {
@@ -40,23 +40,61 @@ export function baselineFor(checkIn, checkOut, entries, beforeTs = Infinity) {
   return prior.reduce((s, en) => s + Number(en.flight_price), 0) / prior.length;
 }
 
-export function computeSuggestion(flightNow, baseline, roomPrice, config) {
+// stats = { mean, stdDev, count } — media, deviazione standard e numero di
+// voli storici usati per calcolarle (vedi pages/api/flight-price.js).
+//
+// La domanda a cui questo calcolo risponde non è più "il volo di oggi è
+// diverso dalla media di più del 5%?" (soglia identica per qualunque rotta,
+// quindi arbitraria), ma "il volo di oggi è insolito rispetto a quanto
+// normalmente oscillano i prezzi su QUESTA rotta?" — cioè uno z-score:
+// quante deviazioni standard separano il prezzo di oggi dalla media
+// storica. Una rotta con prezzi che ballano molto (alta deviazione
+// standard) avrà così una soglia effettiva più larga, una rotta stabile
+// una più stretta, invece di trattare sempre la stessa percentuale come
+// significativa per qualunque rotta.
+//
+// L'affidabilità della media/deviazione standard dipende da quanti voli
+// l'hanno generata: con pochi campioni il segnale è più rumoroso, quindi la
+// proposta di modifica viene attenuata (non azzerata) invece di essere
+// trattata come certa quanto una media calcolata su tanti dati.
+const CONFIDENCE_FULL_SAMPLE = 8;
+const CONFIDENCE_MIN = 0.35;
+
+export function computeSuggestion(flightNow, stats, roomPrice, config) {
   const now = parseFloat(flightNow);
-  const base = parseFloat(baseline);
+  const mean = parseFloat(stats && stats.mean);
   const room = parseFloat(roomPrice);
-  if (!isFinite(now) || !isFinite(base) || !isFinite(room) || base <= 0 || room <= 0) return null;
-  const varPct = ((now - base) / base) * 100;
-  let adjPct = varPct * config.elasticity;
+  const sd = Number(stats && stats.stdDev) || 0;
+  const n = Number(stats && stats.count) || 0;
+  if (!isFinite(now) || !isFinite(mean) || !isFinite(room) || mean <= 0 || room <= 0) return null;
+
+  const varPct = ((now - mean) / mean) * 100;
+
+  // z-score: quante deviazioni standard separano il prezzo di oggi dalla
+  // media storica di questa rotta. Richiede almeno 2 campioni storici per
+  // essere definito (altrimenti non c'è variabilità da misurare).
+  const z = sd > 0 ? (now - mean) / sd : null;
+  const zThreshold = config.zThreshold != null ? config.zThreshold : 1;
+  // Riserva: se non c'è abbastanza storico per calcolare una deviazione
+  // standard, si usa comunque una soglia percentuale fissa e prudente
+  // piuttosto che non giudicare mai nulla come significativo.
+  const fallbackPctThreshold = config.threshold != null ? config.threshold : 5;
+
+  const significant = z != null ? Math.abs(z) >= zThreshold : Math.abs(varPct) >= fallbackPctThreshold;
+
+  const confidence = clamp(Math.sqrt(Math.min(n, CONFIDENCE_FULL_SAMPLE) / CONFIDENCE_FULL_SAMPLE), CONFIDENCE_MIN, 1);
+  const confidenceLevel = n >= CONFIDENCE_FULL_SAMPLE ? "alta" : n >= 3 ? "media" : "bassa";
+
+  let adjPct = 0;
   let action = "mantieni";
-  if (Math.abs(varPct) < config.threshold) {
-    adjPct = 0;
-  } else {
-    adjPct = clamp(adjPct, -config.capDown, config.capUp);
+  if (significant) {
+    adjPct = clamp(varPct * config.elasticity * confidence, -config.capDown, config.capUp);
     if (adjPct > 0.5) action = "aumenta";
     else if (adjPct < -0.5) action = "riduci";
   }
+
   const newRoom = room * (1 + adjPct / 100);
-  return { varPct, adjPct, newRoom, action };
+  return { varPct, adjPct, newRoom, action, z, stdDev: sd, n, confidence, confidenceLevel, significant };
 }
 
 export function formatEUR(n) {
@@ -69,6 +107,14 @@ export function formatPct(n) {
   const s = n > 0 ? "+" : "";
   return `${s}${n.toFixed(1)}%`;
 }
+
+export function formatZ(n) {
+  if (n == null || !isFinite(n)) return "—";
+  const s = n > 0 ? "+" : "";
+  return `${s}${n.toFixed(2)}σ`;
+}
+
+export const CONFIDENCE_LABELS = { alta: "Alta", media: "Media", bassa: "Bassa" };
 
 export function FlipDigits({ text }) {
   const [version, setVersion] = useState(0);
