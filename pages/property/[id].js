@@ -77,6 +77,7 @@ export default function PropertyPage() {
   const [editBathrooms, setEditBathrooms] = useState("");
   const [editMaxGuests, setEditMaxGuests] = useState("");
   const [savingProperty, setSavingProperty] = useState(false);
+  const [savePropertyError, setSavePropertyError] = useState("");
 
   // --- prezzo di partenza suggerito (strutture simili in zona, via
   // AirROI) — non tocca il listino da solo: solo su richiesta esplicita ---
@@ -589,6 +590,7 @@ export default function PropertyPage() {
   async function handleSaveProperty(e) {
     e.preventDefault();
     setSavingProperty(true);
+    setSavePropertyError("");
     const { error } = await supabase
       .from("properties")
       .update({
@@ -602,10 +604,17 @@ export default function PropertyPage() {
       })
       .eq("id", property.id);
     setSavingProperty(false);
-    if (!error) {
-      setEditingProperty(false);
-      loadAll(property.id);
+    if (error) {
+      // Un errore qui più comunemente vuol dire che le colonne fascia/
+      // indirizzo/camere/bagni/ospiti non esistono ancora sul database
+      // (migrazione SQL non ancora eseguita su Supabase): senza mostrare
+      // il messaggio, il salvataggio falliva in silenzio e i dati
+      // sembravano "non salvarsi mai".
+      setSavePropertyError(error.message);
+      return;
     }
+    setEditingProperty(false);
+    loadAll(property.id);
   }
 
   async function handleSaveSettings() {
@@ -761,6 +770,7 @@ export default function PropertyPage() {
             <button type="submit" className="btn btn-primary" disabled={savingProperty}>
               {savingProperty ? "Salvataggio…" : "Salva"}
             </button>
+            {savePropertyError && <p className="notice notice-error">{savePropertyError}</p>}
           </form>
         ) : (
           <div className="stack">
